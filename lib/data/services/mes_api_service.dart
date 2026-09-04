@@ -40,7 +40,7 @@ class MesApiService {
           'Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1',
     };
 
-    if (token != null && token.isNotEmpty) {
+    if (token != null && token.isNotEmpty && !token.startsWith('mos_session_')) {
       headers['auth-token'] = token;
       headers['Authorization'] = 'Bearer $token';
     }
@@ -55,7 +55,7 @@ class MesApiService {
     try {
       final response = await http
           .get(Uri.parse('https://school.mos.ru'))
-          .timeout(const Duration(seconds: 4));
+          .timeout(const Duration(seconds: 6));
       return response.statusCode >= 200 && response.statusCode < 500;
     } catch (_) {
       return false;
@@ -65,47 +65,48 @@ class MesApiService {
   /// Fetches the real student profile from official МЭШ
   Future<UserProfile?> fetchUserProfile() async {
     final token = await _cacheService.getAuthToken();
-    if (token == null || token.isEmpty) return null;
+    final cookies = await _cacheService.getCookies();
+    if ((token == null || token.isEmpty) && (cookies == null || cookies.isEmpty)) {
+      return null;
+    }
 
     try {
       final headers = await _getHeaders();
       final response = await http
           .get(Uri.parse('$_meshBaseUrl/profile'), headers: headers)
-          .timeout(const Duration(seconds: 6));
+          .timeout(const Duration(seconds: 10));
 
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body) as Map<String, dynamic>;
         final profile = UserProfile.fromMeshJson(data);
-        await _cacheService.saveProfile(profile);
-
-        // Save student ID if found in profile
-        if (profile.id.isNotEmpty) {
-          await _cacheService.saveStudentId(profile.id);
+        if (profile.fullName.isNotEmpty || profile.className.isNotEmpty) {
+          await _cacheService.saveProfile(profile);
+          if (profile.id.isNotEmpty && profile.id != 'mesh_user') {
+            await _cacheService.saveStudentId(profile.id);
+          }
+          return profile;
         }
-        return profile;
       }
     } catch (_) {}
     return null;
   }
 
   /// Fetches real schedules from official МЭШ API.
-  /// Strictly returns real data — no random or mock generation.
   Future<List<SchoolDaySchedule>> fetchSchedules() async {
-    final hasNet = await checkConnection();
-    if (!hasNet) {
-      throw const MesApiException(
-        'Не удалось подключиться к серверам МЭШ / Mos ID. Проверьте подключение к интернету или выключите VPN.',
-        isVpnOrNetworkIssue: true,
-      );
-    }
-
     final token = await _cacheService.getAuthToken();
-    if (token == null || token.isEmpty) {
-      // User is not yet authenticated in Mos.ID
+    final cookies = await _cacheService.getCookies();
+    if ((token == null || token.isEmpty) && (cookies == null || cookies.isEmpty)) {
       return [];
     }
 
-    final studentId = await _cacheService.getStudentId() ?? '';
+    String studentId = await _cacheService.getStudentId() ?? '';
+    if (studentId.isEmpty || studentId == 'mesh_user') {
+      final profile = await fetchUserProfile();
+      if (profile != null && profile.id.isNotEmpty && profile.id != 'mesh_user') {
+        studentId = profile.id;
+      }
+    }
+
     final now = DateTime.now();
     final monday = now.subtract(Duration(days: now.weekday - 1));
     final friday = monday.add(const Duration(days: 4));
@@ -113,12 +114,13 @@ class MesApiService {
 
     try {
       final headers = await _getHeaders();
+      final queryParam = studentId.isNotEmpty ? 'student_id=$studentId&' : '';
       final url = Uri.parse(
-        '$_meshBaseUrl/schedule?student_id=$studentId&begin_date=${dateFormat.format(monday)}&end_date=${dateFormat.format(friday)}',
+        '$_meshBaseUrl/schedule?${queryParam}begin_date=${dateFormat.format(monday)}&end_date=${dateFormat.format(friday)}',
       );
 
       final response =
-          await http.get(url, headers: headers).timeout(const Duration(seconds: 6));
+          await http.get(url, headers: headers).timeout(const Duration(seconds: 10));
 
       if (response.statusCode == 200) {
         final body = jsonDecode(response.body);
@@ -126,7 +128,6 @@ class MesApiService {
 
         if (body is Map && body.containsKey('activities')) {
           final activities = body['activities'] as List<dynamic>;
-          // Group lessons by day
           for (int i = 0; i < 5; i++) {
             final dayDate = monday.add(Duration(days: i));
             final dayStr = dateFormat.format(dayDate);
@@ -166,17 +167,27 @@ class MesApiService {
   }
 
   /// Fetches real subject grades from official МЭШ.
-  /// Strictly returns real data — no random or mock generation.
   Future<List<SubjectSummary>> fetchGrades() async {
     final token = await _cacheService.getAuthToken();
-    if (token == null || token.isEmpty) return [];
+    final cookies = await _cacheService.getCookies();
+    if ((token == null || token.isEmpty) && (cookies == null || cookies.isEmpty)) {
+      return [];
+    }
 
-    final studentId = await _cacheService.getStudentId() ?? '';
+    String studentId = await _cacheService.getStudentId() ?? '';
+    if (studentId.isEmpty || studentId == 'mesh_user') {
+      final profile = await fetchUserProfile();
+      if (profile != null && profile.id.isNotEmpty && profile.id != 'mesh_user') {
+        studentId = profile.id;
+      }
+    }
+
     try {
       final headers = await _getHeaders();
-      final url = Uri.parse('$_meshBaseUrl/subject_marks?student_id=$studentId');
+      final queryParam = studentId.isNotEmpty ? '?student_id=$studentId' : '';
+      final url = Uri.parse('$_meshBaseUrl/subject_marks$queryParam');
       final response =
-          await http.get(url, headers: headers).timeout(const Duration(seconds: 6));
+          await http.get(url, headers: headers).timeout(const Duration(seconds: 10));
 
       if (response.statusCode == 200) {
         final body = jsonDecode(response.body);
@@ -229,17 +240,27 @@ class MesApiService {
   }
 
   /// Fetches real homework assignments from official МЭШ.
-  /// Strictly returns real data — no random or mock generation.
   Future<List<HomeworkItem>> fetchHomeworks() async {
     final token = await _cacheService.getAuthToken();
-    if (token == null || token.isEmpty) return [];
+    final cookies = await _cacheService.getCookies();
+    if ((token == null || token.isEmpty) && (cookies == null || cookies.isEmpty)) {
+      return [];
+    }
 
-    final studentId = await _cacheService.getStudentId() ?? '';
+    String studentId = await _cacheService.getStudentId() ?? '';
+    if (studentId.isEmpty || studentId == 'mesh_user') {
+      final profile = await fetchUserProfile();
+      if (profile != null && profile.id.isNotEmpty && profile.id != 'mesh_user') {
+        studentId = profile.id;
+      }
+    }
+
     try {
       final headers = await _getHeaders();
-      final url = Uri.parse('$_meshBaseUrl/homeworks?student_id=$studentId');
+      final queryParam = studentId.isNotEmpty ? '?student_id=$studentId' : '';
+      final url = Uri.parse('$_meshBaseUrl/homeworks$queryParam');
       final response =
-          await http.get(url, headers: headers).timeout(const Duration(seconds: 6));
+          await http.get(url, headers: headers).timeout(const Duration(seconds: 10));
 
       if (response.statusCode == 200) {
         final body = jsonDecode(response.body);
@@ -278,9 +299,11 @@ class MesApiService {
         final profileData = bundle['profile'];
         if (profileData is Map<String, dynamic>) {
           final profile = UserProfile.fromMeshJson(profileData);
-          await _cacheService.saveProfile(profile);
-          if (profile.id.isNotEmpty) {
-            await _cacheService.saveStudentId(profile.id);
+          if (profile.fullName.isNotEmpty || profile.className.isNotEmpty) {
+            await _cacheService.saveProfile(profile);
+            if (profile.id.isNotEmpty && profile.id != 'mesh_user') {
+              await _cacheService.saveStudentId(profile.id);
+            }
           }
         }
       } catch (_) {}
@@ -288,19 +311,19 @@ class MesApiService {
         bundle['studentName'] != null &&
         (bundle['studentName'] as String).isNotEmpty) {
       try {
-        final existingProfile = await _cacheService.getProfile();
-        if (existingProfile == null || existingProfile.fullName.isEmpty) {
-          final domProfile = UserProfile(
-            id: (bundle['studentId'] ?? 'mesh_user').toString(),
-            fullName: bundle['studentName'] as String,
-            className: (bundle['className'] ?? '').toString(),
-            schoolName: (bundle['schoolName'] ?? '').toString(),
-            snils: '',
-            mosId: 'Mos.ID',
-            canteenBalance: 0.0,
-            isMosIdLinked: true,
-          );
-          await _cacheService.saveProfile(domProfile);
+        final domProfile = UserProfile(
+          id: (bundle['studentId'] ?? 'mesh_user').toString(),
+          fullName: bundle['studentName'] as String,
+          className: (bundle['className'] ?? '').toString(),
+          schoolName: (bundle['schoolName'] ?? '').toString(),
+          snils: '',
+          mosId: 'Mos.ID',
+          canteenBalance: 0.0,
+          isMosIdLinked: true,
+        );
+        await _cacheService.saveProfile(domProfile);
+        if (domProfile.id.isNotEmpty && domProfile.id != 'mesh_user') {
+          await _cacheService.saveStudentId(domProfile.id);
         }
       } catch (_) {}
     }
@@ -351,7 +374,7 @@ class MesApiService {
       } catch (_) {}
     }
 
-    // 2b. Scraped DOM Lessons (if rendered in the diary page)
+    // 2b. Scraped DOM Lessons
     if (bundle.containsKey('domLessons') &&
         bundle['domLessons'] is List &&
         (bundle['domLessons'] as List).isNotEmpty) {

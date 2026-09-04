@@ -44,47 +44,127 @@ class UserProfile {
   }
 
   factory UserProfile.fromMeshJson(Map<String, dynamic> json) {
+    Map<String, dynamic> target = json;
+    if (json['payload'] is Map<String, dynamic>) {
+      target = json['payload'] as Map<String, dynamic>;
+    } else if (json['data'] is Map<String, dynamic>) {
+      target = json['data'] as Map<String, dynamic>;
+    } else if (json['profile'] is Map<String, dynamic>) {
+      target = json['profile'] as Map<String, dynamic>;
+    }
+
     String name = '';
     String className = '';
     String school = '';
     String studentId = '';
 
-    if (json.containsKey('children') &&
-        json['children'] is List &&
-        (json['children'] as List).isNotEmpty) {
-      final child = (json['children'] as List).first as Map<String, dynamic>;
-      final fn = child['first_name'] ?? '';
-      final ln = child['last_name'] ?? '';
-      final mn = child['middle_name'] ?? '';
-      name = '$ln $fn $mn'.trim();
-      className = (child['class_name'] ?? child['className'] ?? '').toString();
-      if (child['school'] is Map) {
-        school = (child['school']['name'] ?? child['school']['short_name'] ?? '')
+    final dynamic childrenRaw =
+        target['children'] ?? json['children'] ?? target['payload'] ?? json['payload'];
+    if (childrenRaw is List && childrenRaw.isNotEmpty) {
+      final child = childrenRaw.first;
+      if (child is Map) {
+        final fn = child['first_name'] ?? child['firstName'] ?? '';
+        final ln = child['last_name'] ?? child['lastName'] ?? '';
+        final mn = child['middle_name'] ?? child['middleName'] ?? '';
+        name = '$ln $fn $mn'.trim();
+        className = (child['class_name'] ?? child['className'] ?? child['class'] ?? '').toString();
+        if (child['school'] is Map) {
+          school = (child['school']['name'] ??
+                  child['school']['short_name'] ??
+                  child['school']['full_name'] ??
+                  '')
+              .toString();
+        } else if (child['school_name'] != null) {
+          school = child['school_name'].toString();
+        }
+        studentId = (child['id'] ??
+                child['contingent_guid'] ??
+                child['student_id'] ??
+                child['person_id'] ??
+                '')
             .toString();
       }
-      studentId = (child['id'] ?? child['contingent_guid'] ?? '').toString();
-    } else {
-      final fn = json['first_name'] ?? json['firstName'] ?? '';
-      final ln = json['last_name'] ?? json['lastName'] ?? '';
-      final mn = json['middle_name'] ?? json['middleName'] ?? '';
-      name = '$ln $fn $mn'.trim();
-      className = (json['class_name'] ?? json['className'] ?? '').toString();
-      school = (json['school_name'] ?? json['schoolName'] ?? '').toString();
-      studentId = (json['id'] ?? json['profile_id'] ?? '').toString();
     }
 
     if (name.isEmpty) {
-      name = (json['fullName'] ?? json['name'] ?? 'Ученик МЭШ').toString();
+      final fn = target['first_name'] ?? target['firstName'] ?? '';
+      final ln = target['last_name'] ?? target['lastName'] ?? '';
+      final mn = target['middle_name'] ?? target['middleName'] ?? '';
+      name = '$ln $fn $mn'.trim();
     }
+
+    if (name.isEmpty) {
+      name = (target['fullName'] ??
+              target['full_name'] ??
+              target['name'] ??
+              json['fullName'] ??
+              json['name'] ??
+              '')
+          .toString()
+          .trim();
+    }
+
+    if (className.isEmpty) {
+      className = (target['class_name'] ??
+              target['className'] ??
+              target['class'] ??
+              json['class_name'] ??
+              json['className'] ??
+              '')
+          .toString()
+          .trim();
+    }
+
+    if (school.isEmpty) {
+      if (target['school'] is Map) {
+        school = (target['school']['name'] ??
+                target['school']['short_name'] ??
+                target['school']['full_name'] ??
+                '')
+            .toString();
+      } else {
+        school = (target['school_name'] ??
+                target['schoolName'] ??
+                json['school_name'] ??
+                json['schoolName'] ??
+                '')
+            .toString()
+            .trim();
+      }
+    }
+
+    if (studentId.isEmpty) {
+      studentId = (target['id'] ??
+              target['profile_id'] ??
+              target['student_id'] ??
+              target['contingent_guid'] ??
+              json['id'] ??
+              json['profile_id'] ??
+              json['student_id'] ??
+              '')
+          .toString();
+    }
+
+    final balanceNum = (target['balance'] ??
+        target['canteenBalance'] ??
+        target['account_balance'] ??
+        json['balance'] ??
+        json['canteenBalance']) as num?;
+    final double balance = balanceNum?.toDouble() ?? 0.0;
 
     return UserProfile(
       id: studentId.isNotEmpty ? studentId : 'mesh_user',
       fullName: name,
       className: className,
       schoolName: school,
-      snils: (json['snils'] ?? '').toString(),
-      mosId: (json['mos_id'] ?? json['sps_id'] ?? 'Mos.ID').toString(),
-      canteenBalance: (json['balance'] as num?)?.toDouble() ?? 0.0,
+      snils: (target['snils'] ?? json['snils'] ?? '').toString(),
+      mosId: (target['mos_id'] ??
+              target['sps_id'] ??
+              json['mos_id'] ??
+              json['sps_id'] ??
+              'Mos.ID')
+          .toString(),
+      canteenBalance: balance,
       isMosIdLinked: true,
     );
   }

@@ -152,7 +152,9 @@ class _MainNavigationScreenState extends State<MainNavigationScreen> {
                       borderRadius: BorderRadius.circular(8),
                     ),
                     child: Text(
-                      profile?.className ?? '10 «А»',
+                      profile?.className.isNotEmpty == true
+                          ? profile!.className
+                          : 'МЭШ',
                       style: TextStyle(
                         fontSize: 11,
                         fontWeight: FontWeight.w700,

@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/cupertino.dart';
 import 'package:webview_flutter/webview_flutter.dart';
@@ -33,6 +34,7 @@ class MosIdWebViewScreen extends StatefulWidget {
 
 class _MosIdWebViewScreenState extends State<MosIdWebViewScreen> {
   late final WebViewController _webViewController;
+  final WebViewCookieManager _cookieManager = WebViewCookieManager();
   final MosIdAuthService _authService = MosIdAuthService();
   final MesApiService _apiService = MesApiService();
 
@@ -43,16 +45,11 @@ class _MosIdWebViewScreenState extends State<MosIdWebViewScreen> {
   String? _errorMessage;
   bool _canGoBack = false;
 
-  /// Флаг: пользователь уже побывал на странице login.mos.ru (СУДИР).
-  /// Нужен чтобы не сработал авто-close при первом открытии dnevnik.mos.ru
-  /// ДО того, как произойдёт редирект на login.mos.ru.
   bool _hasVisitedLoginPage = false;
+  bool _syncAttemptStarted = false;
+  String _statusText = '';
+  Timer? _pollingTimer;
 
-  // Стартовая страница: dnevnik.mos.ru.
-  // Он сам инициирует правильный OAuth-поток и перенаправляет на login.mos.ru
-  // с валидными OAuth-параметрами (client_id, scope, redirect_uri и т.д.)
-  // Нельзя ходить на login.mos.ru напрямую — СУДИР выдаёт ошибку
-  // "Вход в сервис не осуществлен" без контекста сервис-провайдера.
   static const String _startUrl = 'https://dnevnik.mos.ru';
 
   static const String _jsPopupFix = r'''
@@ -72,6 +69,12 @@ class _MosIdWebViewScreenState extends State<MosIdWebViewScreen> {
   void initState() {
     super.initState();
     _initWebView();
+  }
+
+  @override
+  void dispose() {
+    _pollingTimer?.cancel();
+    super.dispose();
   }
 
   void _initWebView() {
@@ -101,7 +104,6 @@ class _MosIdWebViewScreenState extends State<MosIdWebViewScreen> {
                 _errorMessage = null;
               });
             }
-            // Запоминаем что пользователь был на странице входа СУДИР
             if (url.contains('login.mos.ru') || url.contains('/sps/')) {
               _hasVisitedLoginPage = true;
             }
@@ -116,18 +118,14 @@ class _MosIdWebViewScreenState extends State<MosIdWebViewScreen> {
                 _canGoBack = canBack;
               });
             }
-            // Запоминаем что пользователь был на странице входа СУДИР
             if (url.contains('login.mos.ru') || url.contains('/sps/')) {
               _hasVisitedLoginPage = true;
             }
             _injectFixes();
-
-            // Проверяем: вернулись ли мы на dnevnik/school ПОСЛЕ login.mos.ru?
-            // Если да — авторизация прошла успешно → извлекаем данные и закрываем
             _checkIfAuthCompleted(url);
           },
           onWebResourceError: (WebResourceError error) {
-            if (error.errorCode == -999) return; // отмена навигации при редиректе
+            if (error.errorCode == -999) return;
             if (_isExtracting) return;
             if (mounted) {
               setState(() {
@@ -144,22 +142,14 @@ class _MosIdWebViewScreenState extends State<MosIdWebViewScreen> {
       ..loadRequest(Uri.parse(_startUrl));
   }
 
-  /// Проверяет, завершилась ли OAuth-авторизация.
-  /// Логика: если пользователь УЖЕ побывал на login.mos.ru (ввёл логин/пароль),
-  /// и сейчас URL снова на dnevnik.mos.ru или school.mos.ru — значит
-  /// СУДИР сделал успешный редирект обратно → авторизация прошла.
   void _checkIfAuthCompleted(String url) {
-    if (_isExtracting) return;
-    if (!_hasVisitedLoginPage) return; // ещё не были на login.mos.ru
-
     final isBackOnService = url.contains('dnevnik.mos.ru') ||
         url.contains('school.mos.ru');
     final isStillOnLogin =
         url.contains('login.mos.ru') || url.contains('/sps/');
 
-    if (isBackOnService && !isStillOnLogin) {
-      // Пользователь вошёл через Mos.ID и СУДИР перенаправил обратно
-      _extractAndTransition();
+    if (isBackOnService && !isStillOnLogin && _hasVisitedLoginPage && !_syncAttemptStarted) {
+      _startDataSyncLoop();
     }
   }
 
@@ -169,18 +159,62 @@ class _MosIdWebViewScreenState extends State<MosIdWebViewScreen> {
     } catch (_) {}
   }
 
-  Future<void> _extractAndTransition() async {
-    if (_isExtracting) return;
-    if (mounted) {
-      setState(() {
-        _isExtracting = true;
-        _errorMessage = null;
-      });
+  void _startDataSyncLoop() {
+    _syncAttemptStarted = true;
+    setState(() {
+      _statusText = 'Авторизация успешна. Загружаем данные...';
+    });
+
+    int attempts = 0;
+    _pollingTimer?.cancel();
+    _pollingTimer = Timer.periodic(const Duration(milliseconds: 1600), (timer) async {
+      attempts++;
+      final success = await _attemptDataExtraction();
+      if (success) {
+        timer.cancel();
+        if (mounted) {
+          setState(() {
+            _statusText = 'Данные получены! Открываем дневник...';
+          });
+          await Future.delayed(const Duration(milliseconds: 500));
+          widget.onAuthResult(true);
+        }
+      } else if (attempts >= 12) {
+        timer.cancel();
+        if (mounted) {
+          setState(() {
+            _statusText = 'Дневник открыт. Нажмите зелёную кнопку ниже.';
+          });
+        }
+      }
+    });
+  }
+
+  Future<String> _extractAllHttpCookies() async {
+    final domains = [
+      Uri.parse('https://school.mos.ru'),
+      Uri.parse('https://dnevnik.mos.ru'),
+      Uri.parse('https://mos.ru'),
+    ];
+
+    final Map<String, String> cookiesMap = {};
+    for (final domain in domains) {
+      try {
+        final list = await _cookieManager.getCookies(domain: domain);
+        for (final c in list) {
+          if (c.name.isNotEmpty && c.value.isNotEmpty) {
+            cookiesMap[c.name] = c.value;
+          }
+        }
+      } catch (_) {}
     }
 
+    return cookiesMap.entries.map((e) => '${e.key}=${e.value}').join('; ');
+  }
+
+  Future<bool> _attemptDataExtraction() async {
     try {
-      // Даём странице 2 секунды загрузить JS и записать токены в localStorage/cookies
-      await Future.delayed(const Duration(seconds: 2));
+      final httpCookies = await _extractAllHttpCookies();
 
       const extractionScript = r'''
         (async function() {
@@ -190,7 +224,7 @@ class _MosIdWebViewScreenState extends State<MosIdWebViewScreen> {
 
           try { cookies = document.cookie || ''; } catch(e) {}
 
-          // localStorage: ищем auth-token, student_id
+          // 1. Check localStorage
           try {
             for (var i = 0; i < localStorage.length; i++) {
               var k = localStorage.key(i) || '';
@@ -205,25 +239,7 @@ class _MosIdWebViewScreenState extends State<MosIdWebViewScreen> {
             }
           } catch(e) {}
 
-          // Cookies: ищем auth_token, profile_id
-          if (!token || !studentId) {
-            try {
-              var parts = cookies.split(';');
-              for (var p of parts) {
-                var kv = p.trim().split('=');
-                var k = kv[0].trim();
-                var v = (kv[1] || '').trim();
-                if (!token && (k === 'auth-token' || k === 'auth_token' || k === 'token') && v.length > 10) {
-                  token = v;
-                }
-                if (!studentId && (k === 'profile_id' || k === 'student_id') && v) {
-                  studentId = v;
-                }
-              }
-            } catch(e) {}
-          }
-
-          // API: получаем профиль (куки сессии уже в браузере)
+          // 2. Try fetching profile via internal fetch (uses WebView credentials)
           var profileData = null;
           try {
             var pRes = await fetch('https://school.mos.ru/api/family/web/v1/profile', {
@@ -232,18 +248,23 @@ class _MosIdWebViewScreenState extends State<MosIdWebViewScreen> {
             });
             if (pRes.ok) {
               profileData = await pRes.json();
-              if (!studentId && profileData) {
-                try {
-                  var children = profileData['children'] || profileData['payload'] || [];
-                  if (Array.isArray(children) && children.length > 0) {
-                    studentId = String(children[0]['id'] || children[0]['student_id'] || '');
-                  }
-                } catch(e) {}
+              if (profileData) {
+                var children = profileData['children'] || profileData['payload'] || [];
+                if (Array.isArray(children) && children.length > 0) {
+                  studentId = String(children[0]['id'] || children[0]['student_id'] || '');
+                }
               }
             }
           } catch(e) {}
 
-          // API: расписание на неделю
+          if (!profileData) {
+            try {
+              var p2 = await fetch('/core/api/student_profiles', { credentials: 'include' });
+              if (p2.ok) profileData = await p2.json();
+            } catch(e) {}
+          }
+
+          // 3. Try fetching schedule if studentId is present
           var schedData = null;
           if (studentId) {
             try {
@@ -261,7 +282,7 @@ class _MosIdWebViewScreenState extends State<MosIdWebViewScreen> {
             } catch(e) {}
           }
 
-          // API: оценки
+          // 4. Try fetching marks
           var marksData = null;
           if (studentId) {
             try {
@@ -273,7 +294,7 @@ class _MosIdWebViewScreenState extends State<MosIdWebViewScreen> {
             } catch(e) {}
           }
 
-          // API: домашние задания
+          // 5. Try fetching homeworks
           var hwData = null;
           if (studentId) {
             try {
@@ -285,14 +306,36 @@ class _MosIdWebViewScreenState extends State<MosIdWebViewScreen> {
             } catch(e) {}
           }
 
+          // 6. DOM Scraper for student name and rendered lessons
+          var studentName = '';
+          var nameEl = document.querySelector('.user-name, .header__profile-name, [data-qa="user-name"], .profile__name, .user-info__name');
+          if (nameEl) studentName = nameEl.innerText.trim();
+
+          var domLessons = [];
+          try {
+            var cards = document.querySelectorAll('.schedule__lesson, .lesson, [data-qa="lesson-card"], .diary-lesson-item, .lesson-card, .schedule-item');
+            cards.forEach(function(c) {
+              var s = (c.querySelector('.subject, .lesson__subject, .title, [data-qa="lesson-name"]') || {}).innerText || '';
+              var t = (c.querySelector('.time, .lesson__time, [data-qa="lesson-time"]') || {}).innerText || '';
+              var r = (c.querySelector('.room, .lesson__room, [data-qa="lesson-room"]') || {}).innerText || '';
+              var tc = (c.querySelector('.teacher, .lesson__teacher, [data-qa="lesson-teacher"]') || {}).innerText || '';
+              var tp = (c.querySelector('.topic, .lesson__topic, [data-qa="lesson-topic"]') || {}).innerText || '';
+              if (s) {
+                domLessons.push({ subject: s.trim(), startTime: t.trim(), room: r.trim(), teacher: tc.trim(), topic: tp.trim() });
+              }
+            });
+          } catch(e) {}
+
           return JSON.stringify({
             token: token,
             cookie: cookies,
             studentId: studentId,
+            studentName: studentName,
             profile: profileData,
             schedules: schedData,
             marks: marksData,
-            homeworks: hwData
+            homeworks: hwData,
+            domLessons: domLessons
           });
         })()
       ''';
@@ -306,28 +349,70 @@ class _MosIdWebViewScreenState extends State<MosIdWebViewScreen> {
 
       final data = jsonDecode(rawJson) as Map<String, dynamic>;
       final token = (data['token'] ?? '').toString();
-      final cookie = (data['cookie'] ?? '').toString();
+      final jsCookie = (data['cookie'] ?? '').toString();
       final studentId = (data['studentId'] ?? '').toString();
+      final studentName = (data['studentName'] ?? '').toString();
+      final profile = data['profile'];
+      final schedules = data['schedules'];
+      final domLessons = data['domLessons'];
 
-      final authToken = token.isNotEmpty
-          ? token
-          : 'mos_session_${DateTime.now().millisecondsSinceEpoch}';
+      final combinedCookies = [httpCookies, jsCookie]
+          .where((s) => s.isNotEmpty)
+          .join('; ');
 
-      await _authService.saveAuthSession(
-        authToken: authToken,
-        cookies: cookie,
-        studentId: studentId,
-      );
+      final bool hasUsefulData = (profile != null) ||
+          studentName.isNotEmpty ||
+          (schedules != null) ||
+          (domLessons is List && domLessons.isNotEmpty) ||
+          (studentId.isNotEmpty && combinedCookies.isNotEmpty);
 
-      await _apiService.saveImportedBundle(data);
-    } catch (e) {
-      await _authService.saveAuthSession(
-        authToken: 'mos_session_${DateTime.now().millisecondsSinceEpoch}',
-      );
-    }
+      if (hasUsefulData) {
+        final authToken = token.isNotEmpty
+            ? token
+            : (combinedCookies.isNotEmpty ? 'mos_cookie_session' : '');
 
-    if (mounted) {
-      widget.onAuthResult(true);
+        if (authToken.isNotEmpty) {
+          await _authService.saveAuthSession(
+            authToken: authToken,
+            cookies: combinedCookies,
+            studentId: studentId,
+          );
+        }
+
+        await _apiService.saveImportedBundle(data);
+        return true;
+      }
+    } catch (_) {}
+    return false;
+  }
+
+  Future<void> _manualSyncAndClose() async {
+    setState(() {
+      _isExtracting = true;
+      _statusText = 'Загрузка дневника в приложение...';
+    });
+
+    final success = await _attemptDataExtraction();
+    if (success) {
+      if (mounted) {
+        widget.onAuthResult(true);
+      }
+    } else {
+      final httpCookies = await _extractAllHttpCookies();
+      if (httpCookies.isNotEmpty) {
+        await _authService.saveAuthSession(
+          authToken: 'mos_cookie_session',
+          cookies: httpCookies,
+        );
+        if (mounted) {
+          widget.onAuthResult(true);
+        }
+      } else {
+        setState(() {
+          _isExtracting = false;
+          _statusText = 'Не удалось получить данные. Убедитесь, что дневник открыт.';
+        });
+      }
     }
   }
 
@@ -340,11 +425,14 @@ class _MosIdWebViewScreenState extends State<MosIdWebViewScreen> {
   }
 
   void _restartLogin() {
+    _pollingTimer?.cancel();
     setState(() {
       _errorMessage = null;
       _isLoading = true;
       _currentUrl = '';
       _hasVisitedLoginPage = false;
+      _syncAttemptStarted = false;
+      _statusText = '';
     });
     _webViewController.loadRequest(Uri.parse(_startUrl));
   }
@@ -361,13 +449,18 @@ class _MosIdWebViewScreenState extends State<MosIdWebViewScreen> {
     final isOnLoginPage = _currentUrl.contains('login.mos.ru') ||
         _currentUrl.contains('/sps/');
 
+    final isDiaryVisible = (_currentUrl.contains('dnevnik.mos.ru') ||
+            _currentUrl.contains('school.mos.ru')) &&
+        !isOnLoginPage &&
+        _currentUrl.isNotEmpty;
+
     return CupertinoPageScaffold(
       backgroundColor: bg,
       navigationBar: CupertinoNavigationBar(
         backgroundColor:
             isDark ? const Color(0xEE121214) : const Color(0xEEFFFFFF),
         middle: Text(
-          isOnLoginPage ? 'Вход через Mos.ID' : 'Авторизация',
+          isOnLoginPage ? 'Вход через Mos.ID' : 'Электронный дневник',
           style: TextStyle(
             fontSize: 16,
             fontWeight: FontWeight.bold,
@@ -407,7 +500,7 @@ class _MosIdWebViewScreenState extends State<MosIdWebViewScreen> {
       child: SafeArea(
         child: Column(
           children: [
-            // Прогресс-бар
+            // Loading Progress Bar
             if (_isLoading && !_isExtracting)
               Container(
                 height: 2.5,
@@ -421,15 +514,35 @@ class _MosIdWebViewScreenState extends State<MosIdWebViewScreen> {
                 ),
               ),
 
-            // Подсказка на странице входа
-            if (isOnLoginPage &&
-                !_isLoading &&
-                !_isExtracting &&
-                _errorMessage == null)
+            // Status Banner if syncing or on login
+            if (_statusText.isNotEmpty)
               Container(
                 width: double.infinity,
                 padding:
-                    const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                    const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                color: AppTheme.grade5Color.withValues(alpha: 0.15),
+                child: Row(
+                  children: [
+                    const CupertinoActivityIndicator(radius: 8),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: Text(
+                        _statusText,
+                        style: const TextStyle(
+                          fontSize: 12,
+                          fontWeight: FontWeight.w600,
+                          color: AppTheme.grade5Color,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              )
+            else if (isOnLoginPage && !_isLoading && _errorMessage == null)
+              Container(
+                width: double.infinity,
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
                 color: isDark
                     ? const Color(0xFF1C1C1E)
                     : const Color(0xFFF2F2F7),
@@ -437,13 +550,13 @@ class _MosIdWebViewScreenState extends State<MosIdWebViewScreen> {
                   children: [
                     const Icon(
                       CupertinoIcons.info_circle_fill,
-                      size: 16,
+                      size: 15,
                       color: CupertinoColors.systemBlue,
                     ),
                     const SizedBox(width: 8),
                     Expanded(
                       child: Text(
-                        'Войдите в Mos.ID — приложение откроется автоматически',
+                        'Войдите в Mos.ID — дневник откроется в приложении',
                         style: TextStyle(fontSize: 12, color: textSecondary),
                       ),
                     ),
@@ -457,7 +570,7 @@ class _MosIdWebViewScreenState extends State<MosIdWebViewScreen> {
                 children: [
                   WebViewWidget(controller: _webViewController),
 
-                  // Начальная загрузка
+                  // Initial Loading Overlay
                   if (_isLoading && _currentUrl.isEmpty)
                     Container(
                       color: CupertinoColors.white,
@@ -468,7 +581,7 @@ class _MosIdWebViewScreenState extends State<MosIdWebViewScreen> {
                             CupertinoActivityIndicator(radius: 16),
                             SizedBox(height: 14),
                             Text(
-                              'Подключаемся к Mos.ID...',
+                              'Подключение к Mos.ID...',
                               style: TextStyle(
                                 fontSize: 14,
                                 color: CupertinoColors.black,
@@ -480,7 +593,7 @@ class _MosIdWebViewScreenState extends State<MosIdWebViewScreen> {
                       ),
                     ),
 
-                  // Оверлей синхронизации (после успешного входа)
+                  // Full Extracting Overlay (only when manual sync or transitioning)
                   if (_isExtracting)
                     Container(
                       color:
@@ -495,7 +608,7 @@ class _MosIdWebViewScreenState extends State<MosIdWebViewScreen> {
                             ),
                             SizedBox(height: 20),
                             Text(
-                              'Вход выполнен!',
+                              'Синхронизация с МЭШ...',
                               style: TextStyle(
                                 fontSize: 20,
                                 color: CupertinoColors.white,
@@ -504,9 +617,9 @@ class _MosIdWebViewScreenState extends State<MosIdWebViewScreen> {
                             ),
                             SizedBox(height: 8),
                             Text(
-                              'Загружаем данные из МЭШ...',
+                              'Загружаем расписание и оценки в приложение',
                               style: TextStyle(
-                                fontSize: 14,
+                                fontSize: 13,
                                 color: CupertinoColors.systemGrey,
                               ),
                             ),
@@ -515,7 +628,40 @@ class _MosIdWebViewScreenState extends State<MosIdWebViewScreen> {
                       ),
                     ),
 
-                  // Ошибка загрузки
+                  // Prominent Action Button: appears when diary page is open
+                  if (isDiaryVisible && !_isExtracting)
+                    Positioned(
+                      left: 16,
+                      right: 16,
+                      bottom: 16,
+                      child: CupertinoButton(
+                        color: CupertinoColors.activeGreen,
+                        borderRadius: BorderRadius.circular(16),
+                        padding: const EdgeInsets.symmetric(vertical: 15),
+                        onPressed: _manualSyncAndClose,
+                        child: Row(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: const [
+                            Icon(
+                              CupertinoIcons.arrow_right_circle_fill,
+                              color: CupertinoColors.white,
+                              size: 22,
+                            ),
+                            SizedBox(width: 8),
+                            Text(
+                              'Открыть дневник в приложении',
+                              style: TextStyle(
+                                color: CupertinoColors.white,
+                                fontSize: 16,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+
+                  // Error Overlay
                   if (_errorMessage != null && !_isExtracting)
                     Container(
                       color: CupertinoColors.white,
@@ -540,8 +686,7 @@ class _MosIdWebViewScreenState extends State<MosIdWebViewScreen> {
                             ),
                             const SizedBox(height: 8),
                             const Text(
-                              'Убедитесь, что устройство подключено '
-                              'к интернету и сервисы mos.ru доступны.',
+                              'Убедитесь, что интернет включён и сайт mos.ru доступен.',
                               textAlign: TextAlign.center,
                               style: TextStyle(
                                 fontSize: 13,

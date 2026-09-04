@@ -4,6 +4,7 @@ import '../view_models/diary_view_model.dart';
 import '../view_models/school_tracker_view_model.dart';
 import '../widgets/segmented_day_picker.dart';
 import '../widgets/lesson_card.dart';
+import 'mos_id_webview_screen.dart';
 
 class ScheduleScreen extends StatelessWidget {
   final DiaryViewModel diaryViewModel;
@@ -29,6 +30,8 @@ class ScheduleScreen extends StatelessWidget {
     final cardBg = isDark ? AppTheme.darkSurface : AppTheme.lightSurface;
     final border = isDark ? AppTheme.darkBorder : AppTheme.lightBorder;
 
+    final bool hasNoSchedulesAtAll = diaryViewModel.schedules.isEmpty;
+
     return CustomScrollView(
       physics: const BouncingScrollPhysics(
         parent: AlwaysScrollableScrollPhysics(),
@@ -40,21 +43,22 @@ class ScheduleScreen extends StatelessWidget {
           },
         ),
 
-        // Day Selector Bar
-        SliverToBoxAdapter(
-          child: Padding(
-            padding: const EdgeInsets.only(top: 8, bottom: 4),
-            child: SegmentedDayPicker(
-              schedules: diaryViewModel.schedules,
-              selectedIndex: diaryViewModel.selectedDayIndex,
-              onDaySelected: (index) => diaryViewModel.selectDay(index),
-              isDark: isDark,
+        // Day Selector Bar (only if we have schedules)
+        if (!hasNoSchedulesAtAll)
+          SliverToBoxAdapter(
+            child: Padding(
+              padding: const EdgeInsets.only(top: 8, bottom: 4),
+              child: SegmentedDayPicker(
+                schedules: diaryViewModel.schedules,
+                selectedIndex: diaryViewModel.selectedDayIndex,
+                onDaySelected: (index) => diaryViewModel.selectDay(index),
+                isDark: isDark,
+              ),
             ),
           ),
-        ),
 
         // Day Header Info Card
-        if (schedule != null)
+        if (schedule != null && schedule.lessons.isNotEmpty)
           SliverToBoxAdapter(
             child: Container(
               margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
@@ -121,7 +125,7 @@ class ScheduleScreen extends StatelessWidget {
             ),
           ),
 
-        // Lessons List
+        // Lessons List or Empty / Error states
         if (schedule != null && schedule.lessons.isNotEmpty)
           SliverList(
             delegate: SliverChildBuilderDelegate(
@@ -137,8 +141,76 @@ class ScheduleScreen extends StatelessWidget {
               childCount: schedule.lessons.length,
             ),
           )
+        else if (hasNoSchedulesAtAll)
+          SliverFillRemaining(
+            hasScrollBody: false,
+            child: Padding(
+              padding: const EdgeInsets.all(28.0),
+              child: Center(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(
+                      CupertinoIcons.exclamationmark_circle,
+                      size: 56,
+                      color: textSecondary,
+                    ),
+                    const SizedBox(height: 16),
+                    Text(
+                      'Данные из МЭШ не загружены',
+                      style: TextStyle(
+                        fontSize: 18,
+                        fontWeight: FontWeight.bold,
+                        color: textPrimary,
+                      ),
+                      textAlign: TextAlign.center,
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      diaryViewModel.errorMessage ??
+                          'Расписание не получено. Попробуйте обновить данные или повторно войти через Mos.ID.',
+                      style: TextStyle(
+                        fontSize: 13,
+                        color: textSecondary,
+                        height: 1.4,
+                      ),
+                      textAlign: TextAlign.center,
+                    ),
+                    const SizedBox(height: 24),
+                    CupertinoButton.filled(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 24, vertical: 12),
+                      onPressed: () =>
+                          diaryViewModel.loadData(forceRefresh: true),
+                      child: const Text('Обновить расписание'),
+                    ),
+                    const SizedBox(height: 12),
+                    CupertinoButton(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 24, vertical: 10),
+                      onPressed: () async {
+                        final res = await MosIdWebViewScreen.show(context,
+                            isDark: isDark);
+                        if (res == true) {
+                          diaryViewModel.loadData(forceRefresh: true);
+                        }
+                      },
+                      child: const Text(
+                        'Войти через Mos.ID заново',
+                        style: TextStyle(
+                          fontSize: 14,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          )
         else
           SliverFillRemaining(
+            hasScrollBody: false,
             child: Center(
               child: Column(
                 mainAxisAlignment: MainAxisAlignment.center,
