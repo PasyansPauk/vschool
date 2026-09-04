@@ -42,27 +42,28 @@ class _MosIdWebViewScreenState extends State<MosIdWebViewScreen> {
   String _currentUrl = '';
   String? _errorMessage;
   bool _canGoBack = false;
-  bool _hasTriggeredImport = false;
 
-  // Primary entrypoint: dnevnik.mos.ru initiates the official diary OAuth flow
-  static const String directLoginUrl = 'https://dnevnik.mos.ru';
+  // Стартовая страница: страница входа СУДИР (Mos.ID)
+  // backUrl — куда СУДИР перенаправит после успешного входа
+  static const String _loginUrl =
+      'https://login.mos.ru/sps/login/methods/password'
+      '?backUrl=https%3A%2F%2Fdnevnik.mos.ru%2F';
 
-  static const String jsPopupFix = '''
-    // Intercept window.open so popup requests navigate inside this webview
+  // Домены, означающие успешную авторизацию и редирект от СУДИР
+  static const List<String> _successDomains = [
+    'dnevnik.mos.ru',
+    'school.mos.ru',
+  ];
+
+  static const String _jsPopupFix = r'''
     window.open = function(url, target, features) {
-      if (url) {
-        window.location.href = url;
-      }
+      if (url) { window.location.href = url; }
       return window;
     };
-
-    // Force target="_blank" links to open in current tab
     document.addEventListener('click', function(e) {
       var a = e.target.closest('a');
-      if (a && a.href) {
-        if (a.target === '_blank') {
-          a.target = '_self';
-        }
+      if (a && a.href && a.target === '_blank') {
+        a.target = '_self';
       }
     }, true);
   ''';
@@ -99,7 +100,8 @@ class _MosIdWebViewScreenState extends State<MosIdWebViewScreen> {
               });
             }
             _injectFixes();
-            _checkAutoTransition(url);
+            // Детектируем успешный редирект СРАЗУ при старте навигации
+            _checkIfSuccessRedirect(url);
           },
           onPageFinished: (url) async {
             if (mounted) {
@@ -111,10 +113,13 @@ class _MosIdWebViewScreenState extends State<MosIdWebViewScreen> {
               });
             }
             _injectFixes();
-            _checkAutoTransition(url);
+            // Детектируем повторно после полной загрузки страницы
+            _checkIfSuccessRedirect(url);
           },
           onWebResourceError: (WebResourceError error) {
+            // -999 — отмена навигации (при редиректе), не ошибка
             if (error.errorCode == -999) return;
+            if (_isExtracting) return;
             if (mounted) {
               setState(() {
                 _errorMessage = error.description;
@@ -123,143 +128,144 @@ class _MosIdWebViewScreenState extends State<MosIdWebViewScreen> {
             }
           },
           onNavigationRequest: (request) {
-            _checkAutoTransition(request.url);
             return NavigationDecision.navigate;
           },
         ),
       )
-      ..loadRequest(Uri.parse(directLoginUrl));
+      ..loadRequest(Uri.parse(_loginUrl));
+  }
+
+  /// Проверяет, является ли URL признаком успешного входа через Mos.ID
+  void _checkIfSuccessRedirect(String url) {
+    if (_isExtracting) return;
+    final isSuccess = _successDomains.any((domain) => url.contains(domain));
+    final isLoginPage =
+        url.contains('login.mos.ru') || url.contains('/sps/');
+
+    if (isSuccess && !isLoginPage) {
+      // Пользователь успешно авторизовался и СУДИР перенаправил на дневник
+      _extractAndTransition();
+    }
   }
 
   Future<void> _injectFixes() async {
     try {
-      await _webViewController.runJavaScript(jsPopupFix);
+      await _webViewController.runJavaScript(_jsPopupFix);
     } catch (_) {}
   }
 
-  void _checkAutoTransition(String url) {
-    final lower = url.toLowerCase();
-
-    // Check if user has entered the diary portal
-    final isInsideDiary = (lower.contains('dnevnik.mos.ru') ||
-            lower.contains('school.mos.ru')) &&
-        !lower.contains('login.mos.ru') &&
-        !lower.contains('/sps/') &&
-        !lower.contains('/oauth/');
-
-    if (isInsideDiary && !_hasTriggeredImport) {
-      // Delay briefly to allow page cookies and DOM to settle, then extract
-      Future.delayed(const Duration(milliseconds: 1200), () {
-        if (mounted && !_hasTriggeredImport) {
-          _extractAndTransition();
-        }
+  Future<void> _extractAndTransition() async {
+    if (_isExtracting) return;
+    if (mounted) {
+      setState(() {
+        _isExtracting = true;
+        _errorMessage = null;
       });
     }
-  }
-
-  Future<void> _extractAndTransition() async {
-    if (_hasTriggeredImport) return;
-    _hasTriggeredImport = true;
-
-    setState(() {
-      _isExtracting = true;
-    });
 
     try {
-      // Advanced in-browser extractor: runs in the authenticated origin context
-      const extractionScript = '''
+      // Извлекаем токен и куки из браузерной сессии
+      const extractionScript = r'''
         (async function() {
-          var cookies = document.cookie || '';
+          var cookies = '';
           var token = '';
           var studentId = '';
 
+          // 1. Читаем куки документа
+          try { cookies = document.cookie || ''; } catch(e) {}
+
+          // 2. Ищем токен в localStorage (dnevnik.mos.ru хранит там auth-token)
           try {
             for (var i = 0; i < localStorage.length; i++) {
               var k = localStorage.key(i) || '';
               var v = localStorage.getItem(k) || '';
-              if (k.indexOf('token') !== -1 || k.indexOf('auth') !== -1) {
-                if (v && v.length > 20) token = v;
+              if ((k === 'auth-token' || k === 'auth_token' || k === 'token' ||
+                   k.indexOf('auth') !== -1) && v && v.length > 20) {
+                token = v;
               }
-              if (k.indexOf('student') !== -1 || k.indexOf('profile') !== -1) {
-                if (v && !studentId) studentId = v;
+              if ((k === 'student_id' || k === 'studentId' || k === 'profile_id') && v) {
+                studentId = v;
               }
             }
           } catch(e) {}
 
-          var parts = cookies.split(';');
-          for (var p of parts) {
-            var kv = p.trim().split('=');
-            if (kv[0] === 'auth_token' || kv[0] === 'token') {
-              if (kv[1] && kv[1].length > 10) token = kv[1];
-            }
-            if (kv[0] === 'profile_id' || kv[0] === 'student_id') {
-              if (kv[1]) studentId = kv[1];
+          // 3. Ищем токен в куках
+          if (!token) {
+            var parts = cookies.split(';');
+            for (var p of parts) {
+              var kv = p.trim().split('=');
+              var k = kv[0].trim();
+              var v = (kv[1] || '').trim();
+              if ((k === 'auth-token' || k === 'auth_token' || k === 'token') && v.length > 10) {
+                token = v;
+              }
+              if ((k === 'profile_id' || k === 'student_id') && v) {
+                studentId = v;
+              }
             }
           }
 
-          // 1. Try fetching profile
+          // 4. Получаем профиль через API (куки уже в браузере — запрос пройдет)
           var profileData = null;
           try {
             var pRes = await fetch('https://school.mos.ru/api/family/web/v1/profile', {
-              headers: { 'x-mes-subsystem': 'familyweb' }
+              headers: { 'x-mes-subsystem': 'familyweb' },
+              credentials: 'include'
             });
-            if (pRes.ok) profileData = await pRes.json();
+            if (pRes.ok) {
+              profileData = await pRes.json();
+              if (!studentId && profileData) {
+                try {
+                  var children = profileData['children'] || profileData['payload'] || [];
+                  if (Array.isArray(children) && children.length > 0) {
+                    studentId = String(children[0]['id'] || children[0]['student_id'] || '');
+                  }
+                } catch(e) {}
+              }
+            }
           } catch(e) {}
 
-          if (!profileData) {
+          // 5. Расписание
+          var schedData = null;
+          if (studentId) {
             try {
-              var p2 = await fetch('/core/api/student_profiles');
-              if (p2.ok) profileData = await p2.json();
+              var now = new Date();
+              var day = now.getDay() || 7;
+              var mon = new Date(now); mon.setDate(now.getDate() - day + 1);
+              var fri = new Date(mon); fri.setDate(mon.getDate() + 4);
+              var pad = function(n) { return String(n).padStart(2,'0'); };
+              var fmt = function(d) { return d.getFullYear()+'-'+pad(d.getMonth()+1)+'-'+pad(d.getDate()); };
+              var sRes = await fetch(
+                'https://school.mos.ru/api/family/web/v1/schedule?student_id='+studentId+'&begin_date='+fmt(mon)+'&end_date='+fmt(fri),
+                { headers: {'x-mes-subsystem':'familyweb'}, credentials:'include' }
+              );
+              if (sRes.ok) schedData = await sRes.json();
             } catch(e) {}
           }
 
-          // 2. Try fetching schedules
-          var schedData = null;
-          try {
-            var now = new Date();
-            var day = now.getDay() || 7;
-            var mon = new Date(now);
-            mon.setDate(now.getDate() - day + 1);
-            var fri = new Date(mon);
-            fri.setDate(mon.getDate() + 4);
-            var pad = function(n) { return String(n).padStart(2, '0'); };
-            var fmt = function(d) { return d.getFullYear() + '-' + pad(d.getMonth()+1) + '-' + pad(d.getDate()); };
-
-            var sUrl = 'https://school.mos.ru/api/family/web/v1/schedule?student_id=' + studentId + '&begin_date=' + fmt(mon) + '&end_date=' + fmt(fri);
-            var sRes = await fetch(sUrl, { headers: { 'x-mes-subsystem': 'familyweb' } });
-            if (sRes.ok) schedData = await sRes.json();
-          } catch(e) {}
-
-          // 3. Try fetching marks
+          // 6. Оценки
           var marksData = null;
-          try {
-            var mUrl = 'https://school.mos.ru/api/family/web/v1/subject_marks?student_id=' + studentId;
-            var mRes = await fetch(mUrl, { headers: { 'x-mes-subsystem': 'familyweb' } });
-            if (mRes.ok) marksData = await mRes.json();
-          } catch(e) {}
+          if (studentId) {
+            try {
+              var mRes = await fetch(
+                'https://school.mos.ru/api/family/web/v1/subject_marks?student_id='+studentId,
+                { headers: {'x-mes-subsystem':'familyweb'}, credentials:'include' }
+              );
+              if (mRes.ok) marksData = await mRes.json();
+            } catch(e) {}
+          }
 
-          // 4. Try fetching homeworks
+          // 7. Домашние задания
           var hwData = null;
-          try {
-            var hUrl = 'https://school.mos.ru/api/family/web/v1/homeworks?student_id=' + studentId;
-            var hRes = await fetch(hUrl, { headers: { 'x-mes-subsystem': 'familyweb' } });
-            if (hRes.ok) hwData = await hRes.json();
-          } catch(e) {}
-
-          // 5. Scrape rendered lessons from DOM as backup
-          var domLessons = [];
-          try {
-            var cards = document.querySelectorAll('.schedule__lesson, .lesson, [data-qa="lesson-card"], .diary-lesson-item');
-            cards.forEach(function(c) {
-              var s = (c.querySelector('.subject, .lesson__subject, .title') || {}).innerText || '';
-              var t = (c.querySelector('.time, .lesson__time') || {}).innerText || '';
-              var r = (c.querySelector('.room, .lesson__room') || {}).innerText || '';
-              var tc = (c.querySelector('.teacher, .lesson__teacher') || {}).innerText || '';
-              if (s) {
-                domLessons.push({ subject: s.trim(), time: t.trim(), room: r.trim(), teacher: tc.trim() });
-              }
-            });
-          } catch(e) {}
+          if (studentId) {
+            try {
+              var hRes = await fetch(
+                'https://school.mos.ru/api/family/web/v1/homeworks?student_id='+studentId,
+                { headers: {'x-mes-subsystem':'familyweb'}, credentials:'include' }
+              );
+              if (hRes.ok) hwData = await hRes.json();
+            } catch(e) {}
+          }
 
           return JSON.stringify({
             token: token,
@@ -268,8 +274,7 @@ class _MosIdWebViewScreenState extends State<MosIdWebViewScreen> {
             profile: profileData,
             schedules: schedData,
             marks: marksData,
-            homeworks: hwData,
-            domLessons: domLessons
+            homeworks: hwData
           });
         })()
       ''';
@@ -286,19 +291,21 @@ class _MosIdWebViewScreenState extends State<MosIdWebViewScreen> {
       final cookie = (data['cookie'] ?? '').toString();
       final studentId = (data['studentId'] ?? '').toString();
 
-      final actualToken = token.isNotEmpty
+      // Токен из localStorage или синтетический (куки уже сохранены — достаточно для API)
+      final authToken = token.isNotEmpty
           ? token
           : 'mos_session_${DateTime.now().millisecondsSinceEpoch}';
 
       await _authService.saveAuthSession(
-        authToken: actualToken,
+        authToken: authToken,
         cookies: cookie,
         studentId: studentId,
       );
 
-      // Save all extracted data straight into the cache
+      // Сохраняем все данные, которые удалось получить через API
       await _apiService.saveImportedBundle(data);
-    } catch (_) {
+    } catch (e) {
+      // Даже если извлечение не удалось — сессия была (браузер перешёл на дневник)
       await _authService.saveAuthSession(
         authToken: 'mos_session_${DateTime.now().millisecondsSinceEpoch}',
       );
@@ -309,12 +316,21 @@ class _MosIdWebViewScreenState extends State<MosIdWebViewScreen> {
     }
   }
 
-  void _loadUrl(String url) {
+  void _reload() {
     setState(() {
       _errorMessage = null;
       _isLoading = true;
     });
-    _webViewController.loadRequest(Uri.parse(url));
+    _webViewController.reload();
+  }
+
+  void _restartLogin() {
+    setState(() {
+      _errorMessage = null;
+      _isLoading = true;
+      _currentUrl = '';
+    });
+    _webViewController.loadRequest(Uri.parse(_loginUrl));
   }
 
   @override
@@ -326,10 +342,9 @@ class _MosIdWebViewScreenState extends State<MosIdWebViewScreen> {
     final textSecondary =
         isDark ? AppTheme.darkTextSecondary : AppTheme.lightTextSecondary;
 
-    final isInsideDiary = (_currentUrl.contains('dnevnik.mos.ru') ||
-            _currentUrl.contains('school.mos.ru')) &&
-        !_currentUrl.contains('login.mos.ru') &&
-        !_currentUrl.contains('/sps/');
+    final isOnLoginPage = _currentUrl.contains('login.mos.ru') ||
+        _currentUrl.contains('/sps/') ||
+        _currentUrl.isEmpty;
 
     return CupertinoPageScaffold(
       backgroundColor: bg,
@@ -337,7 +352,7 @@ class _MosIdWebViewScreenState extends State<MosIdWebViewScreen> {
         backgroundColor:
             isDark ? const Color(0xEE121214) : const Color(0xEEFFFFFF),
         middle: Text(
-          'Вход в МЭШ',
+          isOnLoginPage ? 'Вход через Mos.ID' : 'Авторизация МЭШ',
           style: TextStyle(
             fontSize: 16,
             fontWeight: FontWeight.bold,
@@ -352,7 +367,7 @@ class _MosIdWebViewScreenState extends State<MosIdWebViewScreen> {
               onPressed: () => widget.onAuthResult(false),
               child: const Text('Отмена'),
             ),
-            if (_canGoBack) ...[
+            if (_canGoBack && !_isExtracting) ...[
               const SizedBox(width: 8),
               CupertinoButton(
                 padding: EdgeInsets.zero,
@@ -362,281 +377,188 @@ class _MosIdWebViewScreenState extends State<MosIdWebViewScreen> {
             ],
           ],
         ),
-        trailing: CupertinoButton(
-          padding: EdgeInsets.zero,
-          onPressed: _extractAndTransition,
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: const [
-              Text(
-                'В дневник',
-                style: TextStyle(
-                  fontWeight: FontWeight.bold,
-                  color: CupertinoColors.activeGreen,
+        trailing: _isExtracting
+            ? const CupertinoActivityIndicator()
+            : CupertinoButton(
+                padding: EdgeInsets.zero,
+                onPressed: _reload,
+                child: Icon(
+                  CupertinoIcons.refresh,
+                  size: 20,
+                  color: textSecondary,
                 ),
               ),
-              SizedBox(width: 2),
-              Icon(CupertinoIcons.check_mark,
-                  size: 16, color: CupertinoColors.activeGreen),
-            ],
-          ),
-        ),
       ),
       child: SafeArea(
         child: Column(
           children: [
-            // Progress Indicator Bar
-            if (_isLoading)
+            // Прогресс-бар загрузки
+            if (_isLoading && !_isExtracting)
               Container(
                 height: 2.5,
                 color: isDark ? const Color(0xFF27272A) : const Color(0xFFE4E4E7),
                 child: FractionallySizedBox(
                   alignment: Alignment.centerLeft,
                   widthFactor: (_loadingProgress / 100.0).clamp(0.05, 1.0),
-                  child: Container(
-                    color: AppTheme.mosRedAccent,
-                  ),
+                  child: Container(color: AppTheme.mosRedAccent),
                 ),
               ),
 
-            // Top Navigation & Domain Chips
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-              color: isDark ? const Color(0xFF18181B) : const Color(0xFFF4F4F5),
-              child: Row(
-                children: [
-                  _PortalChip(
-                    title: 'Дневник МЭШ',
-                    isActive: _currentUrl.contains('dnevnik.mos.ru'),
-                    onTap: () => _loadUrl('https://dnevnik.mos.ru'),
-                    isDark: isDark,
-                  ),
-                  const SizedBox(width: 6),
-                  _PortalChip(
-                    title: 'СУДИР',
-                    isActive: _currentUrl.contains('login.mos.ru'),
-                    onTap: () => _loadUrl(
-                        'https://login.mos.ru/sps/login/methods/password?backUrl=https%3A%2F%2Fdnevnik.mos.ru'),
-                    isDark: isDark,
-                  ),
-                  const SizedBox(width: 6),
-                  _PortalChip(
-                    title: 'school.mos.ru',
-                    isActive: _currentUrl.contains('school.mos.ru'),
-                    onTap: () => _loadUrl('https://school.mos.ru'),
-                    isDark: isDark,
-                  ),
-                  const Spacer(),
-                  CupertinoButton(
-                    padding: EdgeInsets.zero,
-                    onPressed: () {
-                      setState(() {
-                        _errorMessage = null;
-                        _isLoading = true;
-                      });
-                      _webViewController.reload();
-                    },
-                    child: Icon(
-                      CupertinoIcons.refresh,
-                      size: 18,
-                      color: textSecondary,
-                    ),
-                  ),
-                ],
-              ),
-            ),
-
-            // In-App WebView Stack
-            Expanded(
-              child: Container(
-                color: CupertinoColors.white,
-                child: Stack(
+            // Подсказка пользователю на странице входа
+            if (isOnLoginPage && !_isLoading && !_isExtracting && _errorMessage == null)
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                color: isDark ? const Color(0xFF1C1C1E) : const Color(0xFFF2F2F7),
+                child: Row(
                   children: [
-                    WebViewWidget(controller: _webViewController),
-
-                    // Initial loading indicator
-                    if (_isLoading && !_isExtracting)
-                      Container(
-                        color: CupertinoColors.white.withValues(alpha: 0.9),
-                        child: Center(
-                          child: Column(
-                            mainAxisSize: MainAxisSize.min,
-                            children: const [
-                              CupertinoActivityIndicator(radius: 16),
-                              SizedBox(height: 14),
-                              Text(
-                                'Загрузка Дневника МЭШ...',
-                                style: TextStyle(
-                                  fontSize: 14,
-                                  color: CupertinoColors.black,
-                                  fontWeight: FontWeight.w600,
-                                ),
-                              ),
-                            ],
-                          ),
+                    const Icon(
+                      CupertinoIcons.info_circle_fill,
+                      size: 16,
+                      color: CupertinoColors.systemBlue,
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        'Войдите в Mos.ID — приложение откроется автоматически',
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: textSecondary,
                         ),
                       ),
-
-                    // Active extraction overlay (transitioning into the app)
-                    if (_isExtracting)
-                      Container(
-                        color: CupertinoColors.black.withValues(alpha: 0.85),
-                        child: Center(
-                          child: Column(
-                            mainAxisSize: MainAxisSize.min,
-                            children: const [
-                              CupertinoActivityIndicator(
-                                radius: 18,
-                                color: CupertinoColors.white,
-                              ),
-                              SizedBox(height: 16),
-                              Text(
-                                'Синхронизация данных с МЭШ...',
-                                style: TextStyle(
-                                  fontSize: 16,
-                                  color: CupertinoColors.white,
-                                  fontWeight: FontWeight.bold,
-                                ),
-                              ),
-                              SizedBox(height: 6),
-                              Text(
-                                'Открываем ваш дневник',
-                                style: TextStyle(
-                                  fontSize: 13,
-                                  color: CupertinoColors.systemGrey,
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                      ),
-
-                    // Error display
-                    if (_errorMessage != null && !_isExtracting)
-                      Container(
-                        color: CupertinoColors.white,
-                        padding: const EdgeInsets.all(24),
-                        child: Center(
-                          child: Column(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              const Icon(
-                                CupertinoIcons.exclamationmark_triangle_fill,
-                                size: 48,
-                                color: CupertinoColors.systemOrange,
-                              ),
-                              const SizedBox(height: 14),
-                              const Text(
-                                'Не удалось загрузить страницу',
-                                style: TextStyle(
-                                  fontSize: 17,
-                                  fontWeight: FontWeight.bold,
-                                  color: CupertinoColors.black,
-                                ),
-                              ),
-                              const SizedBox(height: 8),
-                              Text(
-                                _errorMessage!,
-                                textAlign: TextAlign.center,
-                                style: const TextStyle(
-                                  fontSize: 13,
-                                  color: CupertinoColors.systemGrey,
-                                ),
-                              ),
-                              const SizedBox(height: 18),
-                              CupertinoButton.filled(
-                                padding: const EdgeInsets.symmetric(
-                                    horizontal: 20, vertical: 10),
-                                onPressed: () {
-                                  setState(() {
-                                    _errorMessage = null;
-                                    _isLoading = true;
-                                  });
-                                  _webViewController.reload();
-                                },
-                                child: const Text('Повторить'),
-                              ),
-                            ],
-                          ),
-                        ),
-                      ),
-
-                    // Quick Action Bar if logged in
-                    if (isInsideDiary && !_isExtracting)
-                      Positioned(
-                        left: 20,
-                        right: 20,
-                        bottom: 24,
-                        child: CupertinoButton(
-                          color: CupertinoColors.activeGreen,
-                          borderRadius: BorderRadius.circular(16),
-                          padding: const EdgeInsets.symmetric(vertical: 16),
-                          onPressed: _extractAndTransition,
-                          child: Row(
-                            mainAxisAlignment: MainAxisAlignment.center,
-                            children: const [
-                              Icon(CupertinoIcons.arrow_right_circle_fill,
-                                  color: CupertinoColors.white, size: 20),
-                              SizedBox(width: 8),
-                              Text(
-                                'Открыть дневник в приложении',
-                                style: TextStyle(
-                                  color: CupertinoColors.white,
-                                  fontSize: 16,
-                                  fontWeight: FontWeight.bold,
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                      ),
+                    ),
                   ],
                 ),
               ),
+
+            // Основная WebView область
+            Expanded(
+              child: Stack(
+                children: [
+                  WebViewWidget(controller: _webViewController),
+
+                  // Индикатор начальной загрузки
+                  if (_isLoading && _currentUrl.isEmpty)
+                    Container(
+                      color: CupertinoColors.white,
+                      child: const Center(
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            CupertinoActivityIndicator(radius: 16),
+                            SizedBox(height: 14),
+                            Text(
+                              'Открываем страницу входа Mos.ID...',
+                              style: TextStyle(
+                                fontSize: 14,
+                                color: CupertinoColors.black,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+
+                  // Оверлей синхронизации (после успешного входа)
+                  if (_isExtracting)
+                    Container(
+                      color: CupertinoColors.black.withValues(alpha: 0.88),
+                      child: const Center(
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            CupertinoActivityIndicator(
+                              radius: 20,
+                              color: CupertinoColors.white,
+                            ),
+                            SizedBox(height: 20),
+                            Text(
+                              'Вход выполнен!',
+                              style: TextStyle(
+                                fontSize: 20,
+                                color: CupertinoColors.white,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                            SizedBox(height: 8),
+                            Text(
+                              'Загружаем данные из МЭШ...',
+                              style: TextStyle(
+                                fontSize: 14,
+                                color: CupertinoColors.systemGrey,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+
+                  // Экран ошибки загрузки
+                  if (_errorMessage != null && !_isExtracting)
+                    Container(
+                      color: CupertinoColors.white,
+                      padding: const EdgeInsets.all(24),
+                      child: Center(
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            const Icon(
+                              CupertinoIcons.wifi_slash,
+                              size: 52,
+                              color: CupertinoColors.systemOrange,
+                            ),
+                            const SizedBox(height: 16),
+                            const Text(
+                              'Не удалось загрузить страницу',
+                              style: TextStyle(
+                                fontSize: 17,
+                                fontWeight: FontWeight.bold,
+                                color: CupertinoColors.black,
+                              ),
+                            ),
+                            const SizedBox(height: 8),
+                            const Text(
+                              'Убедитесь, что устройство подключено к интернету и сайт login.mos.ru доступен.',
+                              textAlign: TextAlign.center,
+                              style: TextStyle(
+                                fontSize: 13,
+                                color: CupertinoColors.systemGrey,
+                              ),
+                            ),
+                            const SizedBox(height: 20),
+                            Row(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              children: [
+                                CupertinoButton(
+                                  padding: const EdgeInsets.symmetric(
+                                      horizontal: 20, vertical: 10),
+                                  color: CupertinoColors.systemGrey5,
+                                  onPressed: _restartLogin,
+                                  child: const Text(
+                                    'Начать заново',
+                                    style: TextStyle(
+                                      color: CupertinoColors.black,
+                                    ),
+                                  ),
+                                ),
+                                const SizedBox(width: 12),
+                                CupertinoButton.filled(
+                                  padding: const EdgeInsets.symmetric(
+                                      horizontal: 20, vertical: 10),
+                                  onPressed: _reload,
+                                  child: const Text('Повторить'),
+                                ),
+                              ],
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                ],
+              ),
             ),
           ],
-        ),
-      ),
-    );
-  }
-}
-
-class _PortalChip extends StatelessWidget {
-  final String title;
-  final bool isActive;
-  final VoidCallback onTap;
-  final bool isDark;
-
-  const _PortalChip({
-    required this.title,
-    required this.isActive,
-    required this.onTap,
-    required this.isDark,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return GestureDetector(
-      onTap: onTap,
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-        decoration: BoxDecoration(
-          color: isActive
-              ? (isDark ? CupertinoColors.white : CupertinoColors.black)
-              : (isDark ? const Color(0xFF27272A) : const Color(0xFFE4E4E7)),
-          borderRadius: BorderRadius.circular(10),
-        ),
-        child: Text(
-          title,
-          style: TextStyle(
-            fontSize: 12,
-            fontWeight: FontWeight.w600,
-            color: isActive
-                ? (isDark ? CupertinoColors.black : CupertinoColors.white)
-                : (isDark
-                    ? AppTheme.darkTextSecondary
-                    : AppTheme.lightTextSecondary),
-          ),
         ),
       ),
     );
