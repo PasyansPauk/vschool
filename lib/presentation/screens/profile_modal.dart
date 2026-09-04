@@ -246,9 +246,9 @@ class ProfileModal extends StatelessWidget {
 
               const SizedBox(height: 20),
 
-              // Settings & Tools
+              // Settings
               Text(
-                'Настройки и тестирование',
+                'Настройки приложения',
                 style: TextStyle(
                   fontSize: 13,
                   fontWeight: FontWeight.w700,
@@ -298,11 +298,11 @@ class ProfileModal extends StatelessWidget {
               ),
               const SizedBox(height: 8),
 
-              // Simulate VPN Error Button
+              // Real Sync with MES Button
               GestureDetector(
                 onTap: () {
                   Navigator.of(context).pop();
-                  viewModel.simulateVpnFailure();
+                  viewModel.loadData(forceRefresh: true);
                 },
                 child: Container(
                   padding:
@@ -313,10 +313,10 @@ class ProfileModal extends StatelessWidget {
                   ),
                   child: Row(
                     children: [
-                      const Icon(
-                        CupertinoIcons.wifi_slash,
+                      Icon(
+                        CupertinoIcons.arrow_2_circlepath,
                         size: 20,
-                        color: CupertinoColors.systemOrange,
+                        color: textPrimary,
                       ),
                       const SizedBox(width: 12),
                       Expanded(
@@ -324,7 +324,7 @@ class ProfileModal extends StatelessWidget {
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
                             Text(
-                              'Симулировать ошибку сети / VPN',
+                              'Обновить данные из МЭШ',
                               style: TextStyle(
                                 fontSize: 14,
                                 fontWeight: FontWeight.w600,
@@ -332,7 +332,7 @@ class ProfileModal extends StatelessWidget {
                               ),
                             ),
                             Text(
-                              'Проверка баннера и чтения старого кэша',
+                              'Синхронизация расписания и оценок',
                               style: TextStyle(
                                 fontSize: 11,
                                 color: textSecondary,

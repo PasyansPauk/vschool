@@ -8,11 +8,6 @@ class SchoolTrackerViewModel extends ChangeNotifier {
   DateTime _now = DateTime.now();
   DateTime get now => _now;
 
-  // Allows simulation mode for testing during evening/night hours
-  bool _isDemoTimeActive = false;
-  bool get isDemoTimeActive => _isDemoTimeActive;
-  Duration _simulatedOffset = Duration.zero;
-
   SchoolTrackerViewModel() {
     _startTimer();
   }
@@ -20,28 +15,9 @@ class SchoolTrackerViewModel extends ChangeNotifier {
   void _startTimer() {
     _timer?.cancel();
     _timer = Timer.periodic(const Duration(seconds: 1), (_) {
-      if (_isDemoTimeActive) {
-        _now = DateTime.now().add(_simulatedOffset);
-      } else {
-        _now = DateTime.now();
-      }
+      _now = DateTime.now();
       notifyListeners();
     });
-  }
-
-  void toggleDemoTime(SchoolDaySchedule? schedule) {
-    _isDemoTimeActive = !_isDemoTimeActive;
-    if (_isDemoTimeActive && schedule != null && schedule.lessons.isNotEmpty) {
-      // Set simulated time to during the 3rd lesson (e.g. 10:45)
-      final today = DateTime.now();
-      final target = DateTime(today.year, today.month, today.day, 10, 48, 25);
-      _simulatedOffset = target.difference(today);
-      _now = target;
-    } else {
-      _simulatedOffset = Duration.zero;
-      _now = DateTime.now();
-    }
-    notifyListeners();
   }
 
   DateTime _parseTime(String timeStr) {

@@ -1,6 +1,6 @@
 import 'package:flutter/cupertino.dart';
 import '../../core/theme/app_theme.dart';
-import '../../data/services/mos_id_auth_service.dart';
+import 'mos_id_webview_screen.dart';
 
 class AuthScreen extends StatefulWidget {
   final VoidCallback onLoginSuccess;
@@ -17,54 +17,20 @@ class AuthScreen extends StatefulWidget {
 }
 
 class _AuthScreenState extends State<AuthScreen> {
-  final MosIdAuthService _authService = MosIdAuthService();
   bool _isConnecting = false;
 
   Future<void> _handleMosIdLogin() async {
     setState(() => _isConnecting = true);
-    // Launch browser with official login.mos.ru
-    await _authService.launchMosIdWebsite();
+
+    final success = await MosIdWebViewScreen.show(
+      context,
+      isDark: widget.isDark,
+    );
 
     if (!mounted) return;
+    setState(() => _isConnecting = false);
 
-    // Show confirmation dialog after returning from browser
-    showCupertinoDialog(
-      context: context,
-      builder: (ctx) => CupertinoAlertDialog(
-        title: const Text('Авторизация Mos.ID'),
-        content: const Text(
-          'Вы перешли на портал mos.ru для авторизации в СУДИР. Подтвердить успешный вход и синхронизацию профиля МЭШ?',
-        ),
-        actions: [
-          CupertinoDialogAction(
-            child: const Text('Отмена'),
-            onPressed: () {
-              Navigator.of(ctx).pop();
-              setState(() => _isConnecting = false);
-            },
-          ),
-          CupertinoDialogAction(
-            isDefaultAction: true,
-            child: const Text('Войти'),
-            onPressed: () async {
-              Navigator.of(ctx).pop();
-              await _authService.loginWithMosIdSuccess();
-              if (mounted) {
-                setState(() => _isConnecting = false);
-                widget.onLoginSuccess();
-              }
-            },
-          ),
-        ],
-      ),
-    );
-  }
-
-  Future<void> _handleDemoLogin() async {
-    setState(() => _isConnecting = true);
-    await _authService.loginWithMosIdSuccess();
-    if (mounted) {
-      setState(() => _isConnecting = false);
+    if (success == true) {
       widget.onLoginSuccess();
     }
   }
@@ -93,7 +59,9 @@ class _AuthScreenState extends State<AuthScreen> {
                 width: 90,
                 height: 90,
                 decoration: BoxDecoration(
-                  color: isDark ? AppTheme.darkSurfaceElevated : CupertinoColors.white,
+                  color: isDark
+                      ? AppTheme.darkSurfaceElevated
+                      : CupertinoColors.white,
                   borderRadius: BorderRadius.circular(28),
                   border: Border.all(
                     color: isDark ? AppTheme.darkBorder : AppTheme.lightBorder,
@@ -111,7 +79,8 @@ class _AuthScreenState extends State<AuthScreen> {
                   child: Icon(
                     CupertinoIcons.book_fill,
                     size: 42,
-                    color: isDark ? CupertinoColors.white : CupertinoColors.black,
+                    color:
+                        isDark ? CupertinoColors.white : CupertinoColors.black,
                   ),
                 ),
               ),
@@ -229,30 +198,8 @@ class _AuthScreenState extends State<AuthScreen> {
                   ),
                 ),
               ),
-              const SizedBox(height: 12),
 
-              // Quick Demo Login Button
-              SizedBox(
-                width: double.infinity,
-                child: CupertinoButton(
-                  color: isDark
-                      ? AppTheme.darkSurfaceSecondary
-                      : AppTheme.lightSurfaceSecondary,
-                  borderRadius: BorderRadius.circular(16),
-                  padding: const EdgeInsets.symmetric(vertical: 14),
-                  onPressed: _isConnecting ? null : _handleDemoLogin,
-                  child: Text(
-                    'Быстрый демо-вход',
-                    style: TextStyle(
-                      color: textPrimary,
-                      fontSize: 15,
-                      fontWeight: FontWeight.w600,
-                    ),
-                  ),
-                ),
-              ),
-
-              const SizedBox(height: 14),
+              const SizedBox(height: 16),
               Text(
                 'Авторизация через СУДИР г. Москвы',
                 style: TextStyle(

@@ -17,25 +17,20 @@ class MesApiException implements Exception {
 }
 
 class MesApiService {
-  bool forceNetworkFailure = false;
-
   Future<bool> checkConnection() async {
-    if (forceNetworkFailure) return false;
     try {
       final response = await http
           .get(Uri.parse('https://school.mos.ru'))
-          .timeout(const Duration(seconds: 4));
-      // If we get 200 or any standard response, connection is ok
+          .timeout(const Duration(seconds: 3));
       return response.statusCode >= 200 && response.statusCode < 500;
     } catch (_) {
-      // In simulator or offline or blocked by VPN:
       return false;
     }
   }
 
   Future<List<SchoolDaySchedule>> fetchSchedules() async {
     final hasNet = await checkConnection();
-    if (!hasNet && forceNetworkFailure) {
+    if (!hasNet) {
       throw const MesApiException(
         'Не удалось подключиться к серверам МЭШ / Mos ID. Проверьте подключение к интернету или выключите VPN.',
         isVpnOrNetworkIssue: true,

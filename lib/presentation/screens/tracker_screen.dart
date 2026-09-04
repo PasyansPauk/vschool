@@ -43,7 +43,6 @@ class TrackerScreen extends StatelessWidget {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.center,
               children: [
-                // Top control for testing simulation
                 Row(
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
@@ -56,30 +55,21 @@ class TrackerScreen extends StatelessWidget {
                         letterSpacing: -0.4,
                       ),
                     ),
-                    CupertinoButton(
+                    Container(
                       padding: const EdgeInsets.symmetric(
                           horizontal: 10, vertical: 4),
-                      color: trackerViewModel.isDemoTimeActive
-                          ? (isDark
-                              ? CupertinoColors.white
-                              : CupertinoColors.black)
-                          : (isDark
-                              ? AppTheme.darkSurfaceSecondary
-                              : AppTheme.lightSurfaceSecondary),
-                      borderRadius: BorderRadius.circular(12),
-                      onPressed: () => trackerViewModel.toggleDemoTime(schedule),
+                      decoration: BoxDecoration(
+                        color: isDark
+                            ? AppTheme.darkSurfaceSecondary
+                            : AppTheme.lightSurfaceSecondary,
+                        borderRadius: BorderRadius.circular(10),
+                      ),
                       child: Text(
-                        trackerViewModel.isDemoTimeActive
-                            ? 'Режим: День ☀️'
-                            : 'Тест: Симуляция',
+                        schedule?.dayName ?? 'Сегодня',
                         style: TextStyle(
                           fontSize: 12,
                           fontWeight: FontWeight.w600,
-                          color: trackerViewModel.isDemoTimeActive
-                              ? (isDark
-                                  ? CupertinoColors.black
-                                  : CupertinoColors.white)
-                              : textPrimary,
+                          color: textSecondary,
                         ),
                       ),
                     ),

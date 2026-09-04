@@ -130,14 +130,4 @@ class DiaryViewModel extends ChangeNotifier {
     _homeworks = await _repository.toggleHomeworkCompletion(id);
     notifyListeners();
   }
-
-  void simulateVpnFailure() {
-    _repository.apiService.forceNetworkFailure = true;
-    loadData(forceRefresh: true);
-  }
-
-  void resetNetworkFailure() {
-    _repository.apiService.forceNetworkFailure = false;
-    loadData(forceRefresh: true);
-  }
 }
