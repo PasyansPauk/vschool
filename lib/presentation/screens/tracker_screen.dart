@@ -18,7 +18,7 @@ class TrackerScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final schedule = diaryViewModel.currentDaySchedule;
+    final schedule = diaryViewModel.todaySchedule;
     final timeSpent = trackerViewModel.getTimeSpent(schedule);
     final timeRemaining = trackerViewModel.getTimeRemaining(schedule);
     final progress = trackerViewModel.getDayProgress(schedule);
@@ -267,7 +267,10 @@ class TrackerScreen extends StatelessWidget {
                         ),
                         const SizedBox(height: 4),
                         Text(
-                          '${currentLesson.room} • Преподаватель: ${currentLesson.teacher}',
+                          [
+                            if (currentLesson.room.isNotEmpty) 'Каб. ${currentLesson.room}',
+                            if (currentLesson.teacher.isNotEmpty) 'Учитель: ${currentLesson.teacher}',
+                          ].join(' • '),
                           style: TextStyle(
                             fontSize: 13,
                             color: textSecondary,
@@ -287,7 +290,7 @@ class TrackerScreen extends StatelessWidget {
                         ],
                       ] else if (isBreak) ...[
                         Text(
-                          'Перемена между уроками',
+                          'Перемена между уроками ☕️',
                           style: TextStyle(
                             fontSize: 18,
                             fontWeight: FontWeight.bold,
@@ -297,13 +300,13 @@ class TrackerScreen extends StatelessWidget {
                         const SizedBox(height: 4),
                         if (nextLesson != null)
                           Text(
-                            'Следующий урок: ${nextLesson.number}. ${nextLesson.subject} (${nextLesson.room})',
+                            'Следующий: ${nextLesson.number}. ${nextLesson.subject}${nextLesson.room.isNotEmpty ? " (${nextLesson.room})" : ""}',
                             style: TextStyle(
                               fontSize: 13,
                               color: textSecondary,
                             ),
                           ),
-                      ] else if (progress >= 1.0) ...[
+                      ] else if (progress >= 1.0 && schedule != null && schedule.lessons.isNotEmpty) ...[
                         Text(
                           'Учебный день завершён 🎉',
                           style: TextStyle(
@@ -314,7 +317,28 @@ class TrackerScreen extends StatelessWidget {
                         ),
                         const SizedBox(height: 4),
                         Text(
-                          'Все уроки пройдены. Отличный день для отдыха и ДЗ!',
+                          'Все уроки пройдены. Пора домой отдыхать!',
+                          style: TextStyle(
+                            fontSize: 13,
+                            color: textSecondary,
+                          ),
+                        ),
+                      ] else if (schedule == null || schedule.lessons.isEmpty) ...[
+                        Text(
+                          (schedule != null && schedule.isWeekend)
+                              ? 'Сегодня выходной 🏖️'
+                              : 'На сегодня уроков нет 🎉',
+                          style: TextStyle(
+                            fontSize: 18,
+                            fontWeight: FontWeight.bold,
+                            color: textPrimary,
+                          ),
+                        ),
+                        const SizedBox(height: 4),
+                        Text(
+                          (schedule != null && schedule.isWeekend)
+                              ? 'Отдыхай и восстанавливай силы ✨'
+                              : 'Свободный день или каникулы!',
                           style: TextStyle(
                             fontSize: 13,
                             color: textSecondary,
@@ -331,7 +355,7 @@ class TrackerScreen extends StatelessWidget {
                         ),
                         const SizedBox(height: 4),
                         Text(
-                          'Первый урок начнется в ${schedule?.startTime ?? "08:30"}',
+                          'Первый урок начнется в ${schedule.startTime}',
                           style: TextStyle(
                             fontSize: 13,
                             color: textSecondary,

@@ -54,4 +54,30 @@ class Lesson {
       attendance: json['attendance'] as String?,
     );
   }
+
+  Lesson copyWith({
+    int? number,
+    String? subject,
+    String? startTime,
+    String? endTime,
+    String? room,
+    String? teacher,
+    String? topic,
+    String? homework,
+    GradeItem? grade,
+    String? attendance,
+  }) {
+    return Lesson(
+      number: number ?? this.number,
+      subject: subject ?? this.subject,
+      startTime: startTime ?? this.startTime,
+      endTime: endTime ?? this.endTime,
+      room: room ?? this.room,
+      teacher: teacher ?? this.teacher,
+      topic: topic ?? this.topic,
+      homework: homework ?? this.homework,
+      grade: grade ?? this.grade,
+      attendance: attendance ?? this.attendance,
+    );
+  }
 }

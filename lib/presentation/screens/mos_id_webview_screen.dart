@@ -61,6 +61,82 @@ class _MosIdWebViewScreenState extends State<MosIdWebViewScreen> {
     }, true);
   ''';
 
+  static const String _jsNetworkInterceptor = r'''
+    (function() {
+      if (window._interceptorInjected) return;
+      window._interceptorInjected = true;
+
+      function sendToken(token, pId) {
+        if (token && token.startsWith('Bearer ')) {
+          token = token.substring(7);
+        }
+        if (token && window.AuthChannel) {
+           window.AuthChannel.postMessage(JSON.stringify({authToken: token, profileId: pId}));
+        }
+      }
+
+      var originalFetch = window.fetch;
+      window.fetch = async function() {
+        var args = arguments;
+        var url = args[0];
+        var options = args[1];
+        
+        if (options && options.headers) {
+          var token = '';
+          var pid = '';
+          
+          if (options.headers instanceof Headers) {
+            token = options.headers.get('auth-token') || options.headers.get('Auth-Token') || options.headers.get('Authorization');
+            pid = options.headers.get('profile-id');
+          } else {
+            // It's a plain object
+            var lowerHeaders = {};
+            for (var k in options.headers) {
+              lowerHeaders[k.toLowerCase()] = options.headers[k];
+            }
+            token = lowerHeaders['auth-token'] || lowerHeaders['authorization'];
+            pid = lowerHeaders['profile-id'];
+          }
+
+          if (!pid && typeof url === 'string') {
+            var match = url.match(/student_id=(\d+)/);
+            if (match) pid = match[1];
+          }
+          sendToken(token, pid);
+        }
+        return originalFetch.apply(this, arguments);
+      };
+
+      var originalXhrOpen = XMLHttpRequest.prototype.open;
+      var originalXhrSend = XMLHttpRequest.prototype.send;
+      var originalXhrSetRequestHeader = XMLHttpRequest.prototype.setRequestHeader;
+      
+      XMLHttpRequest.prototype.open = function() {
+        this._url = arguments[1];
+        return originalXhrOpen.apply(this, arguments);
+      };
+      
+      XMLHttpRequest.prototype.setRequestHeader = function(header, value) {
+        if (!this._headers) this._headers = {};
+        this._headers[header.toLowerCase()] = value;
+        return originalXhrSetRequestHeader.apply(this, arguments);
+      };
+
+      XMLHttpRequest.prototype.send = function() {
+        if (this._headers) {
+          var token = this._headers['auth-token'] || this._headers['authorization'];
+          var pid = this._headers['profile-id'];
+          if (!pid && typeof this._url === 'string') {
+            var match = this._url.match(/student_id=(\d+)/);
+            if (match) pid = match[1];
+          }
+          sendToken(token, pid);
+        }
+        return originalXhrSend.apply(this, arguments);
+      };
+    })();
+  ''';
+
   @override
   void initState() {
     super.initState();
@@ -136,12 +212,39 @@ class _MosIdWebViewScreenState extends State<MosIdWebViewScreen> {
           },
         ),
       )
+      ..addJavaScriptChannel(
+        'AuthChannel',
+        onMessageReceived: (JavaScriptMessage message) async {
+          if (_hasTransferred) return;
+          try {
+            final data = jsonDecode(message.message);
+            final authToken = data['authToken'] as String?;
+            final profileId = data['profileId'] as String?;
+
+            if (authToken != null && authToken.isNotEmpty) {
+              String cookieHeader = '';
+              try {
+                final cookies = await _cookieManager.getCookies(domain: Uri.parse('https://school.mos.ru'));
+                cookieHeader = cookies.map((c) => '${c.name}=${c.value}').join('; ');
+              } catch (_) {}
+
+              await _authService.saveAuthSession(
+                authToken: authToken,
+                studentId: profileId ?? '',
+                cookies: cookieHeader,
+              );
+              _completeLogin();
+            }
+          } catch (_) {}
+        },
+      )
       ..loadRequest(Uri.parse(_startUrl));
   }
 
   Future<void> _injectFixes() async {
     try {
       await _webViewController.runJavaScript(_jsPopupFix);
+      await _webViewController.runJavaScript(_jsNetworkInterceptor);
     } catch (_) {}
   }
 
@@ -243,14 +346,15 @@ class _MosIdWebViewScreenState extends State<MosIdWebViewScreen> {
       final cookieHeader =
           cookieMap.entries.map((e) => '${e.key}=${e.value}').join('; ');
 
-      // If we have either authToken, studentId, or valid cookies on school.mos.ru
-      final bool hasAuth = authToken.isNotEmpty ||
-          (studentId.isNotEmpty && cookieHeader.isNotEmpty) ||
-          (cookieMap.containsKey('auth_token') || cookieMap.containsKey('aupd_token'));
+      // Accept aupd_token or mos.ru session cookies as valid auth
+      final bool hasAuth = authToken.isNotEmpty || 
+                           cookieMap.containsKey('aupd_token') || 
+                           cookieMap.containsKey('auth_token') ||
+                           cookieHeader.contains('mos_id');
 
       if (hasAuth) {
         await _authService.saveAuthSession(
-          authToken: authToken.isNotEmpty ? authToken : 'mos_authenticated',
+          authToken: authToken.isNotEmpty ? authToken : 'cookie_auth_only',
           cookies: cookieHeader,
           studentId: studentId,
         );

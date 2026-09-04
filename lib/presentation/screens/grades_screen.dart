@@ -1,4 +1,5 @@
 import 'package:flutter/cupertino.dart';
+import 'package:flutter/services.dart';
 import '../../core/theme/app_theme.dart';
 import '../../data/models/subject_summary.dart';
 import '../view_models/diary_view_model.dart';
@@ -17,10 +18,10 @@ class GradesScreen extends StatelessWidget {
     showCupertinoModalPopup(
       context: context,
       builder: (ctx) => Container(
-        padding: const EdgeInsets.all(20),
+        padding: const EdgeInsets.fromLTRB(20, 16, 20, 32),
         decoration: BoxDecoration(
           color: isDark ? AppTheme.darkSurface : AppTheme.lightSurface,
-          borderRadius: const BorderRadius.vertical(top: Radius.circular(24)),
+          borderRadius: const BorderRadius.vertical(top: Radius.circular(28)),
         ),
         child: SafeArea(
           top: false,
@@ -28,6 +29,20 @@ class GradesScreen extends StatelessWidget {
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
+              // Grab handle
+              Center(
+                child: Container(
+                  width: 36,
+                  height: 4,
+                  decoration: BoxDecoration(
+                    color: isDark
+                        ? const Color(0xFF3F3F46)
+                        : const Color(0xFFD4D4D8),
+                    borderRadius: BorderRadius.circular(2),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 18),
               Row(
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
@@ -350,7 +365,7 @@ class GradesScreen extends StatelessWidget {
             delegate: SliverChildBuilderDelegate(
               (context, index) {
               final subject = viewModel.grades[index];
-              return Container(
+              final cardContent = Container(
                 margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
                 padding: const EdgeInsets.all(16),
                 decoration: BoxDecoration(
@@ -360,7 +375,10 @@ class GradesScreen extends StatelessWidget {
                 ),
                 child: GestureDetector(
                   behavior: HitTestBehavior.opaque,
-                  onTap: () => _showSubjectDetails(context, subject),
+                  onTap: () {
+                    HapticFeedback.lightImpact();
+                    _showSubjectDetails(context, subject);
+                  },
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
@@ -391,46 +409,72 @@ class GradesScreen extends StatelessWidget {
                           ),
                         ],
                       ),
-                      const SizedBox(height: 2),
-                      Text(
-                        subject.teacher,
-                        style: TextStyle(
-                          fontSize: 12,
-                          color: textSecondary,
+                      if (subject.teacher.isNotEmpty) ...[
+                        const SizedBox(height: 2),
+                        Text(
+                          subject.teacher,
+                          style: TextStyle(
+                            fontSize: 12,
+                            color: textSecondary,
+                          ),
                         ),
-                      ),
+                      ],
                       const SizedBox(height: 12),
                       // Horizontal Grade Badges with Weights
-                      Wrap(
-                        spacing: 6,
-                        runSpacing: 6,
-                        children: subject.grades.map((g) {
-                          return Container(
-                            padding: const EdgeInsets.symmetric(
-                                horizontal: 9, vertical: 5),
-                            decoration: BoxDecoration(
-                              color: AppTheme.getGradeColor(g.value)
-                                  .withValues(alpha: 0.15),
-                              borderRadius: BorderRadius.circular(8),
-                              border: Border.all(
+                      if (subject.grades.isNotEmpty)
+                        Wrap(
+                          spacing: 6,
+                          runSpacing: 6,
+                          children: subject.grades.map((g) {
+                            return Container(
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 9, vertical: 5),
+                              decoration: BoxDecoration(
                                 color: AppTheme.getGradeColor(g.value)
-                                    .withValues(alpha: 0.4),
+                                    .withValues(alpha: 0.15),
+                                borderRadius: BorderRadius.circular(8),
+                                border: Border.all(
+                                  color: AppTheme.getGradeColor(g.value)
+                                      .withValues(alpha: 0.4),
+                                ),
                               ),
-                            ),
-                            child: Text(
-                              '${g.value}${g.weightSuperscript}',
-                              style: TextStyle(
-                                fontSize: 13,
-                                fontWeight: FontWeight.bold,
-                                color: AppTheme.getGradeColor(g.value),
+                              child: Text(
+                                '${g.value}${g.weightSuperscript}',
+                                style: TextStyle(
+                                  fontSize: 13,
+                                  fontWeight: FontWeight.bold,
+                                  color: AppTheme.getGradeColor(g.value),
+                                ),
                               ),
-                            ),
-                          );
-                        }).toList(),
-                      ),
+                            );
+                          }).toList(),
+                        )
+                      else
+                        Text(
+                          'Нет текущих оценок',
+                          style: TextStyle(
+                            fontSize: 12,
+                            color: textSecondary.withValues(alpha: 0.6),
+                          ),
+                        ),
                     ],
                   ),
                 ),
+              );
+
+              return CupertinoContextMenu(
+                actions: [
+                  CupertinoContextMenuAction(
+                    trailingIcon: CupertinoIcons.chart_bar,
+                    onPressed: () {
+                      HapticFeedback.lightImpact();
+                      Navigator.of(context).pop();
+                      _showSubjectDetails(context, subject);
+                    },
+                    child: const Text('Подробные оценки'),
+                  ),
+                ],
+                child: cardContent,
               );
             },
             childCount: viewModel.grades.length,

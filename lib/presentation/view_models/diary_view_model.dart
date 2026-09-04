@@ -24,6 +24,18 @@ class DiaryViewModel extends ChangeNotifier {
   int _selectedDayIndex = 0;
   int get selectedDayIndex => _selectedDayIndex;
 
+  DateTime _selectedWeekDate = DateTime.now();
+  DateTime get selectedWeekDate => _selectedWeekDate;
+
+  bool get isCurrentWeek {
+    final now = DateTime.now();
+    final monA = DateTime(_selectedWeekDate.year, _selectedWeekDate.month, _selectedWeekDate.day)
+        .subtract(Duration(days: _selectedWeekDate.weekday - 1));
+    final monB = DateTime(now.year, now.month, now.day)
+        .subtract(Duration(days: now.weekday - 1));
+    return monA.year == monB.year && monA.month == monB.month && monA.day == monB.day;
+  }
+
   List<SchoolDaySchedule> _schedules = [];
   List<SchoolDaySchedule> get schedules => _schedules;
 
@@ -33,6 +45,17 @@ class DiaryViewModel extends ChangeNotifier {
       return _schedules.first;
     }
     return _schedules[_selectedDayIndex];
+  }
+
+  /// Live schedule for today (used by SchoolTracker)
+  SchoolDaySchedule? get todaySchedule {
+    final now = DateTime.now();
+    for (final s in _schedules) {
+      if (s.date.year == now.year && s.date.month == now.month && s.date.day == now.day) {
+        return s;
+      }
+    }
+    return currentDaySchedule;
   }
 
   List<SubjectSummary> _grades = [];
@@ -77,6 +100,43 @@ class DiaryViewModel extends ChangeNotifier {
     }
   }
 
+  Future<void> nextWeek() async {
+    _selectedWeekDate = _selectedWeekDate.add(const Duration(days: 7));
+    _selectedDayIndex = 0; // Default to Monday of next week
+    await loadScheduleForWeek();
+  }
+
+  Future<void> previousWeek() async {
+    _selectedWeekDate = _selectedWeekDate.subtract(const Duration(days: 7));
+    _selectedDayIndex = 0; // Default to Monday of previous week
+    await loadScheduleForWeek();
+  }
+
+  Future<void> goToToday() async {
+    _selectedWeekDate = DateTime.now();
+    final weekday = DateTime.now().weekday;
+    _selectedDayIndex = (weekday - 1).clamp(0, 6);
+    await loadScheduleForWeek();
+  }
+
+  Future<void> loadScheduleForWeek() async {
+    _isLoading = true;
+    _errorMessage = null;
+    notifyListeners();
+
+    try {
+      _schedules = await _repository.getSchedules(
+        targetDate: _selectedWeekDate,
+        forceRefresh: true,
+      );
+    } catch (e) {
+      // Keep existing schedules if fail
+    } finally {
+      _isLoading = false;
+      notifyListeners();
+    }
+  }
+
   void dismissErrorBanner() {
     _showVpnOrOfflineBanner = false;
     _errorMessage = null;
@@ -91,15 +151,18 @@ class DiaryViewModel extends ChangeNotifier {
 
     try {
       _profile = await _repository.getProfile();
-      _schedules = await _repository.getSchedules(forceRefresh: forceRefresh);
+      _schedules = await _repository.getSchedules(
+        forceRefresh: forceRefresh,
+        targetDate: _selectedWeekDate,
+      );
       _grades = await _repository.getGrades(forceRefresh: forceRefresh);
       _homeworks = await _repository.getHomeworks(forceRefresh: forceRefresh);
       _lastSyncTime = await _repository.cacheService.getLastSync() ?? DateTime.now();
 
-      // Select today's day of week if within Monday-Friday (1-5)
-      final weekday = DateTime.now().weekday;
-      if (weekday >= 1 && weekday <= 5 && _schedules.isNotEmpty) {
-        _selectedDayIndex = (weekday - 1).clamp(0, _schedules.length - 1);
+      // Select today's day of week (0 to 6)
+      if (isCurrentWeek) {
+        final weekday = DateTime.now().weekday;
+        _selectedDayIndex = (weekday - 1).clamp(0, _schedules.isNotEmpty ? _schedules.length - 1 : 6);
       }
 
       if (_schedules.isEmpty && _grades.isEmpty && _profile == null) {
@@ -132,6 +195,16 @@ class DiaryViewModel extends ChangeNotifier {
   }
 
   Future<void> toggleHomework(String id) async {
+    // Instant local memory update for snappy UI feel
+    _homeworks = _homeworks.map((hw) {
+      if (hw.id == id) {
+        return hw.copyWith(isCompleted: !hw.isCompleted);
+      }
+      return hw;
+    }).toList();
+    notifyListeners();
+
+    // Persist changes
     _homeworks = await _repository.toggleHomeworkCompletion(id);
     notifyListeners();
   }

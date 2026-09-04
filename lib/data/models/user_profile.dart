@@ -7,6 +7,7 @@ class UserProfile {
   final String mosId;
   final double canteenBalance;
   final bool isMosIdLinked;
+  final String avatarUrl;
 
   const UserProfile({
     required this.id,
@@ -17,6 +18,7 @@ class UserProfile {
     required this.mosId,
     required this.canteenBalance,
     required this.isMosIdLinked,
+    this.avatarUrl = '',
   });
 
   Map<String, dynamic> toJson() => {
@@ -28,6 +30,7 @@ class UserProfile {
         'mosId': mosId,
         'canteenBalance': canteenBalance,
         'isMosIdLinked': isMosIdLinked,
+        'avatarUrl': avatarUrl,
       };
 
   factory UserProfile.fromJson(Map<String, dynamic> json) {
@@ -40,6 +43,7 @@ class UserProfile {
       mosId: json['mosId'] as String? ?? '',
       canteenBalance: (json['canteenBalance'] as num?)?.toDouble() ?? 0.0,
       isMosIdLinked: json['isMosIdLinked'] as bool? ?? false,
+      avatarUrl: json['avatarUrl'] as String? ?? '',
     );
   }
 
@@ -152,6 +156,18 @@ class UserProfile {
         json['canteenBalance']) as num?;
     final double balance = balanceNum?.toDouble() ?? 0.0;
 
+    String avatarUrl = '';
+    final dynamic childrenRaw2 = target['children'] ?? json['children'];
+    if (childrenRaw2 is List && childrenRaw2.isNotEmpty) {
+       final child = childrenRaw2.first;
+       if (child is Map) {
+         avatarUrl = (child['avatar_url'] ?? child['photo_url'] ?? '').toString();
+       }
+    }
+    if (avatarUrl.isEmpty) {
+       avatarUrl = (target['avatar_url'] ?? target['photo_url'] ?? json['avatar_url'] ?? '').toString();
+    }
+
     return UserProfile(
       id: studentId.isNotEmpty ? studentId : 'mesh_user',
       fullName: name,
@@ -166,6 +182,7 @@ class UserProfile {
           .toString(),
       canteenBalance: balance,
       isMosIdLinked: true,
+      avatarUrl: avatarUrl,
     );
   }
 }

@@ -1,4 +1,5 @@
 import 'package:flutter/cupertino.dart';
+import 'package:flutter/services.dart';
 import '../../core/theme/app_theme.dart';
 import '../view_models/diary_view_model.dart';
 import '../view_models/school_tracker_view_model.dart';
@@ -94,6 +95,9 @@ class _MainNavigationScreenState extends State<MainNavigationScreen> {
           tabBar: CupertinoTabBar(
             currentIndex: _currentTabIndex,
             onTap: (index) {
+              if (index != _currentTabIndex) {
+                HapticFeedback.selectionClick();
+              }
               setState(() => _currentTabIndex = index);
             },
             backgroundColor: isDark

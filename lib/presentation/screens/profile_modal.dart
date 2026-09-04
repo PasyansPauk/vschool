@@ -1,4 +1,5 @@
 import 'package:flutter/cupertino.dart';
+import 'package:package_info_plus/package_info_plus.dart';
 import '../../core/theme/app_theme.dart';
 import '../view_models/diary_view_model.dart';
 import '../../data/services/mos_id_auth_service.dart';
@@ -154,17 +155,16 @@ class _ProfileModalState extends State<ProfileModal> {
                             isDark ? CupertinoColors.white : CupertinoColors.black,
                         shape: BoxShape.circle,
                       ),
-                      child: Center(
-                        child: Text(
-                          fullName.isNotEmpty ? fullName.substring(0, 1) : 'У',
-                          style: TextStyle(
-                            fontSize: 22,
-                            fontWeight: FontWeight.bold,
-                            color: isDark
-                                ? CupertinoColors.black
-                                : CupertinoColors.white,
-                          ),
-                        ),
+                      child: ClipOval(
+                        child: profile != null && profile.avatarUrl.isNotEmpty
+                            ? Image.network(
+                                profile.avatarUrl,
+                                width: 54,
+                                height: 54,
+                                fit: BoxFit.cover,
+                                errorBuilder: (ctx, err, stack) => _buildFallbackAvatar(fullName, isDark),
+                              )
+                            : _buildFallbackAvatar(fullName, isDark),
                       ),
                     ),
                     const SizedBox(width: 14),
@@ -189,15 +189,15 @@ class _ProfileModalState extends State<ProfileModal> {
                             ),
                           ),
                           const SizedBox(height: 4),
-                          Text(
-                            schoolName,
-                            style: TextStyle(
-                              fontSize: 11,
-                              color: textSecondary,
+                            Text(
+                              schoolName,
+                              style: TextStyle(
+                                fontSize: 11,
+                                color: textSecondary,
+                              ),
+                              maxLines: 3,
+                              overflow: TextOverflow.ellipsis,
                             ),
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                          ),
                         ],
                       ),
                     ),
@@ -517,8 +517,39 @@ class _ProfileModalState extends State<ProfileModal> {
                   ),
                 ),
               ),
+              const SizedBox(height: 16),
+              Center(
+                child: FutureBuilder<PackageInfo>(
+                  future: PackageInfo.fromPlatform(),
+                  builder: (context, snapshot) {
+                    final text = snapshot.hasData 
+                        ? 'v${snapshot.data!.version} (Build ${snapshot.data!.buildNumber})' 
+                        : 'Загрузка...';
+                    return Text(
+                      text,
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: textSecondary.withValues(alpha: 0.5),
+                      ),
+                    );
+                  },
+                ),
+              ),
             ],
           ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildFallbackAvatar(String fullName, bool isDark) {
+    return Center(
+      child: Text(
+        fullName.isNotEmpty ? fullName.substring(0, 1) : 'У',
+        style: TextStyle(
+          fontSize: 22,
+          fontWeight: FontWeight.bold,
+          color: isDark ? CupertinoColors.black : CupertinoColors.white,
         ),
       ),
     );
