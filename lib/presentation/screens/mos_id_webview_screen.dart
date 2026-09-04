@@ -39,11 +39,12 @@ class _MosIdWebViewScreenState extends State<MosIdWebViewScreen> {
   int _loadingProgress = 0;
   bool _isLoading = true;
   String _currentUrl = '';
+  String? _errorMessage;
   bool _canGoBack = false;
 
-  // Direct login entrypoint for МЭШ that immediately triggers SUDIR without landing hurdles
+  // Canonical Mos.ID login URL with verified official service return URL
   static const String directLoginUrl =
-      'https://school.mos.ru/v3/auth/sudir/login';
+      'https://login.mos.ru/sps/login/methods/password?backUrl=https%3A%2F%2Fwww.mos.ru%2F';
 
   static const String jsPopupFix = '''
     // Intercept window.open so popup requests navigate inside this webview
@@ -74,6 +75,7 @@ class _MosIdWebViewScreenState extends State<MosIdWebViewScreen> {
   void _initWebView() {
     _webViewController = WebViewController()
       ..setJavaScriptMode(JavaScriptMode.unrestricted)
+      ..setBackgroundColor(CupertinoColors.white)
       ..setUserAgent(
         'Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1',
       )
@@ -92,6 +94,7 @@ class _MosIdWebViewScreenState extends State<MosIdWebViewScreen> {
               setState(() {
                 _currentUrl = url;
                 _isLoading = true;
+                _errorMessage = null;
               });
             }
             _injectFixes();
@@ -108,6 +111,16 @@ class _MosIdWebViewScreenState extends State<MosIdWebViewScreen> {
             }
             _injectFixes();
             _handleUrlChanges(url);
+          },
+          onWebResourceError: (WebResourceError error) {
+            // Ignore minor cancelled requests
+            if (error.errorCode == -999) return;
+            if (mounted) {
+              setState(() {
+                _errorMessage = error.description;
+                _isLoading = false;
+              });
+            }
           },
           onNavigationRequest: (request) {
             _handleUrlChanges(request.url);
@@ -127,20 +140,10 @@ class _MosIdWebViewScreenState extends State<MosIdWebViewScreen> {
   Future<void> _handleUrlChanges(String url) async {
     final lower = url.toLowerCase();
 
-    // Auto-recovery if landing on orphan session error
-    if (lower.contains('/sps/login/error') || lower.contains('error=true')) {
-      Future.delayed(const Duration(milliseconds: 300), () {
-        if (mounted) {
-          _webViewController.loadRequest(Uri.parse(directLoginUrl));
-        }
-      });
-      return;
-    }
-
-    // Detect successful authentication redirect to diary portal
-    if (lower.contains('school.mos.ru/desktop') ||
+    // Detect successful authentication redirect to portal
+    if (lower.contains('www.mos.ru') && !lower.contains('login') ||
+        lower.contains('school.mos.ru/desktop') ||
         lower.contains('school.mos.ru/student') ||
-        lower.contains('school.mos.ru/v3/auth/sudir/callback') ||
         lower.contains('dnevnik.mos.ru/diary') ||
         lower.contains('dnevnik.mos.ru/desktop') ||
         lower.contains('my.mos.ru')) {
@@ -190,7 +193,6 @@ class _MosIdWebViewScreenState extends State<MosIdWebViewScreen> {
 
       final res = await _webViewController.runJavaScriptReturningResult(script);
       String rawJson = res.toString();
-      // Unquote if wrapped in string quotes
       if (rawJson.startsWith('"') && rawJson.endsWith('"')) {
         rawJson = jsonDecode(rawJson) as String;
       }
@@ -200,7 +202,9 @@ class _MosIdWebViewScreenState extends State<MosIdWebViewScreen> {
       final cookie = (data['cookie'] ?? '').toString();
       final studentId = (data['studentId'] ?? '').toString();
 
-      final actualToken = token.isNotEmpty ? token : 'mos_session_${DateTime.now().millisecondsSinceEpoch}';
+      final actualToken = token.isNotEmpty
+          ? token
+          : 'mos_session_${DateTime.now().millisecondsSinceEpoch}';
 
       await _authService.saveAuthSession(
         authToken: actualToken,
@@ -208,14 +212,13 @@ class _MosIdWebViewScreenState extends State<MosIdWebViewScreen> {
         studentId: studentId,
       );
 
-      // Attempt to immediately fetch real profile from МЭШ
+      // Fetch student profile from official МЭШ
       await _apiService.fetchUserProfile();
 
       if (mounted) {
         widget.onAuthResult(true);
       }
     } catch (_) {
-      // Fallback: save session and complete
       await _authService.saveAuthSession(
         authToken: 'mos_session_${DateTime.now().millisecondsSinceEpoch}',
       );
@@ -226,6 +229,10 @@ class _MosIdWebViewScreenState extends State<MosIdWebViewScreen> {
   }
 
   void _loadUrl(String url) {
+    setState(() {
+      _errorMessage = null;
+      _isLoading = true;
+    });
     _webViewController.loadRequest(Uri.parse(url));
   }
 
@@ -244,7 +251,7 @@ class _MosIdWebViewScreenState extends State<MosIdWebViewScreen> {
         backgroundColor:
             isDark ? const Color(0xEE121214) : const Color(0xEEFFFFFF),
         middle: Text(
-          'Вход в МЭШ (Mos.ID)',
+          'Вход через Mos.ID',
           style: TextStyle(
             fontSize: 16,
             fontWeight: FontWeight.bold,
@@ -309,18 +316,9 @@ class _MosIdWebViewScreenState extends State<MosIdWebViewScreen> {
               child: Row(
                 children: [
                   _PortalChip(
-                    title: 'Вход СУДИР',
-                    isActive: _currentUrl.contains('sudir') ||
-                        _currentUrl.contains('login.mos.ru'),
+                    title: 'Mos.ID',
+                    isActive: _currentUrl.contains('login.mos.ru'),
                     onTap: () => _loadUrl(directLoginUrl),
-                    isDark: isDark,
-                  ),
-                  const SizedBox(width: 6),
-                  _PortalChip(
-                    title: 'МЭШ',
-                    isActive: _currentUrl.contains('school.mos.ru') &&
-                        !_currentUrl.contains('sudir'),
-                    onTap: () => _loadUrl('https://school.mos.ru'),
                     isDark: isDark,
                   ),
                   const SizedBox(width: 6),
@@ -330,10 +328,23 @@ class _MosIdWebViewScreenState extends State<MosIdWebViewScreen> {
                     onTap: () => _loadUrl('https://dnevnik.mos.ru'),
                     isDark: isDark,
                   ),
+                  const SizedBox(width: 6),
+                  _PortalChip(
+                    title: 'МЭШ',
+                    isActive: _currentUrl.contains('school.mos.ru'),
+                    onTap: () => _loadUrl('https://school.mos.ru'),
+                    isDark: isDark,
+                  ),
                   const Spacer(),
                   CupertinoButton(
                     padding: EdgeInsets.zero,
-                    onPressed: () => _webViewController.reload(),
+                    onPressed: () {
+                      setState(() {
+                        _errorMessage = null;
+                        _isLoading = true;
+                      });
+                      _webViewController.reload();
+                    },
                     child: Icon(
                       CupertinoIcons.refresh,
                       size: 18,
@@ -344,9 +355,85 @@ class _MosIdWebViewScreenState extends State<MosIdWebViewScreen> {
               ),
             ),
 
-            // In-App WebView
+            // In-App WebView with Visual Loading Spinner & Error Handling
             Expanded(
-              child: WebViewWidget(controller: _webViewController),
+              child: Container(
+                color: CupertinoColors.white,
+                child: Stack(
+                  children: [
+                    WebViewWidget(controller: _webViewController),
+                    if (_isLoading)
+                      Container(
+                        color: CupertinoColors.white.withValues(alpha: 0.9),
+                        child: Center(
+                          child: Column(
+                            mainAxisSize: MainAxisSize.min,
+                            children: const [
+                              CupertinoActivityIndicator(radius: 16),
+                              SizedBox(height: 14),
+                              Text(
+                                'Загрузка Mos.ID...',
+                                style: TextStyle(
+                                  fontSize: 14,
+                                  color: CupertinoColors.black,
+                                  fontWeight: FontWeight.w600,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    if (_errorMessage != null)
+                      Container(
+                        color: CupertinoColors.white,
+                        padding: const EdgeInsets.all(24),
+                        child: Center(
+                          child: Column(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              const Icon(
+                                CupertinoIcons.exclamationmark_triangle_fill,
+                                size: 48,
+                                color: CupertinoColors.systemOrange,
+                              ),
+                              const SizedBox(height: 14),
+                              const Text(
+                                'Не удалось загрузить страницу',
+                                style: TextStyle(
+                                  fontSize: 17,
+                                  fontWeight: FontWeight.bold,
+                                  color: CupertinoColors.black,
+                                ),
+                              ),
+                              const SizedBox(height: 8),
+                              Text(
+                                _errorMessage!,
+                                textAlign: TextAlign.center,
+                                style: const TextStyle(
+                                  fontSize: 13,
+                                  color: CupertinoColors.systemGrey,
+                                ),
+                              ),
+                              const SizedBox(height: 18),
+                              CupertinoButton.filled(
+                                padding: const EdgeInsets.symmetric(
+                                    horizontal: 20, vertical: 10),
+                                onPressed: () {
+                                  setState(() {
+                                    _errorMessage = null;
+                                    _isLoading = true;
+                                  });
+                                  _webViewController.reload();
+                                },
+                                child: const Text('Повторить'),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                  ],
+                ),
+              ),
             ),
           ],
         ),
