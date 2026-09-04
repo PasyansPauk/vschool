@@ -271,6 +271,183 @@ class MesApiService {
     return [];
   }
 
+  Future<void> saveImportedBundle(Map<String, dynamic> bundle) async {
+    // 1. Profile
+    if (bundle.containsKey('profile') && bundle['profile'] != null) {
+      try {
+        final profileData = bundle['profile'];
+        if (profileData is Map<String, dynamic>) {
+          final profile = UserProfile.fromMeshJson(profileData);
+          await _cacheService.saveProfile(profile);
+          if (profile.id.isNotEmpty) {
+            await _cacheService.saveStudentId(profile.id);
+          }
+        }
+      } catch (_) {}
+    }
+
+    // 2. Schedule
+    if (bundle.containsKey('schedules') && bundle['schedules'] != null) {
+      try {
+        final schedData = bundle['schedules'];
+        if (schedData is Map && schedData.containsKey('activities')) {
+          final activities = schedData['activities'] as List<dynamic>;
+          final now = DateTime.now();
+          final monday = now.subtract(Duration(days: now.weekday - 1));
+          final dateFormat = DateFormat('yyyy-MM-dd');
+          final List<SchoolDaySchedule> parsed = [];
+
+          for (int i = 0; i < 5; i++) {
+            final dayDate = monday.add(Duration(days: i));
+            final dayStr = dateFormat.format(dayDate);
+            final dayLessons = <Lesson>[];
+
+            for (final act in activities) {
+              if (act is Map && act['date'] == dayStr) {
+                final numVal =
+                    (act['lesson_number'] as num?)?.toInt() ?? (dayLessons.length + 1);
+                dayLessons.add(Lesson(
+                  number: numVal,
+                  subject: (act['subject_name'] ?? act['title'] ?? 'Урок').toString(),
+                  room: (act['room_number'] ?? act['room'] ?? '').toString(),
+                  teacher: (act['teacher_name'] ?? '').toString(),
+                  startTime: (act['begin_time'] ?? '08:30').toString(),
+                  endTime: (act['end_time'] ?? '09:15').toString(),
+                  topic: (act['lesson_topic'] ?? act['topic'] ?? '').toString(),
+                  homework: act['homework']?.toString(),
+                ));
+              }
+            }
+            dayLessons.sort((a, b) => a.number.compareTo(b.number));
+            parsed.add(SchoolDaySchedule(
+              date: dayDate,
+              dayName: _dayName(dayDate.weekday),
+              lessons: dayLessons,
+            ));
+          }
+          if (parsed.isNotEmpty) {
+            await _cacheService.saveSchedules(parsed);
+          }
+        }
+      } catch (_) {}
+    }
+
+    // 2b. Scraped DOM Lessons (if rendered in the diary page)
+    if (bundle.containsKey('domLessons') &&
+        bundle['domLessons'] is List &&
+        (bundle['domLessons'] as List).isNotEmpty) {
+      try {
+        final domList = bundle['domLessons'] as List<dynamic>;
+        final now = DateTime.now();
+        final dayLessons = <Lesson>[];
+        for (int i = 0; i < domList.length; i++) {
+          final item = domList[i];
+          if (item is Map) {
+            final subj = (item['subject'] ?? '').toString().trim();
+            if (subj.isNotEmpty) {
+              dayLessons.add(Lesson(
+                number: i + 1,
+                subject: subj,
+                startTime: (item['startTime'] ?? '08:30').toString(),
+                endTime: (item['endTime'] ?? '09:15').toString(),
+                room: (item['room'] ?? '').toString(),
+                teacher: (item['teacher'] ?? '').toString(),
+                topic: (item['topic'] ?? '').toString(),
+              ));
+            }
+          }
+        }
+        if (dayLessons.isNotEmpty) {
+          final existing = await _cacheService.getSchedules() ?? [];
+          final todaySchedule = SchoolDaySchedule(
+            date: now,
+            dayName: _dayName(now.weekday),
+            lessons: dayLessons,
+          );
+          final updated = [todaySchedule];
+          for (final s in existing) {
+            if (s.dayName != todaySchedule.dayName) updated.add(s);
+          }
+          await _cacheService.saveSchedules(updated);
+        }
+      } catch (_) {}
+    }
+
+    // 3. Marks / Grades
+    if (bundle.containsKey('marks') && bundle['marks'] != null) {
+      try {
+        final marksData = bundle['marks'];
+        if (marksData is Map && marksData.containsKey('payload')) {
+          final payload = marksData['payload'] as List<dynamic>;
+          final List<SubjectSummary> result = [];
+          for (final item in payload) {
+            if (item is Map) {
+              final subjectName = (item['subject_name'] ?? '').toString();
+              final teacher = (item['teacher_name'] ?? '').toString();
+              final marksRaw = (item['marks'] as List<dynamic>?) ?? [];
+              final gradeItems = <GradeItem>[];
+              for (final m in marksRaw) {
+                if (m is Map) {
+                  final val = int.tryParse((m['value'] ?? '').toString()) ?? 0;
+                  final weight = int.tryParse((m['weight'] ?? '1').toString()) ?? 1;
+                  final date =
+                      DateTime.tryParse((m['date'] ?? '').toString()) ?? DateTime.now();
+                  if (val > 0) {
+                    gradeItems.add(GradeItem(
+                      id: (m['id'] ?? '').toString(),
+                      subject: subjectName,
+                      value: val,
+                      weight: weight,
+                      date: date,
+                      topic: (m['topic'] ?? '').toString(),
+                    ));
+                  }
+                }
+              }
+              if (subjectName.isNotEmpty) {
+                result.add(SubjectSummary(
+                    subject: subjectName, teacher: teacher, grades: gradeItems));
+              }
+            }
+          }
+          if (result.isNotEmpty) {
+            await _cacheService.saveGrades(result);
+          }
+        }
+      } catch (_) {}
+    }
+
+    // 4. Homeworks
+    if (bundle.containsKey('homeworks') && bundle['homeworks'] != null) {
+      try {
+        final hwData = bundle['homeworks'];
+        if (hwData is Map && hwData.containsKey('payload')) {
+          final payload = hwData['payload'] as List<dynamic>;
+          final List<HomeworkItem> result = [];
+          for (final hw in payload) {
+            if (hw is Map) {
+              result.add(HomeworkItem(
+                id: (hw['id'] ?? '').toString(),
+                subject: (hw['subject_name'] ?? 'Предмет').toString(),
+                description: (hw['description'] ?? hw['task'] ?? '').toString(),
+                dueDate:
+                    DateTime.tryParse((hw['date'] ?? '').toString()) ?? DateTime.now(),
+                isCompleted: hw['is_done'] == true,
+                attachmentsCount:
+                    (hw['materials'] as List<dynamic>?)?.length ?? 0,
+              ));
+            }
+          }
+          if (result.isNotEmpty) {
+            await _cacheService.saveHomeworks(result);
+          }
+        }
+      } catch (_) {}
+    }
+
+    await _cacheService.saveLastSync(DateTime.now());
+  }
+
   String _dayName(int weekday) {
     switch (weekday) {
       case DateTime.monday:
