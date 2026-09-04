@@ -101,6 +101,11 @@ class DiaryViewModel extends ChangeNotifier {
       if (weekday >= 1 && weekday <= 5 && _schedules.isNotEmpty) {
         _selectedDayIndex = (weekday - 1).clamp(0, _schedules.length - 1);
       }
+
+      if (_schedules.isEmpty && _grades.isEmpty && _profile == null) {
+        _errorMessage =
+            'Данные из МЭШ пока не загрузились. Проверьте интернет или обновите сессию Mos.ID.';
+      }
     } on MesApiException catch (e) {
       _errorMessage = e.message;
       _showVpnOrOfflineBanner = true;

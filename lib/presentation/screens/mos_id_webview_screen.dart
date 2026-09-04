@@ -4,7 +4,6 @@ import 'package:flutter/cupertino.dart';
 import 'package:webview_flutter/webview_flutter.dart';
 import '../../core/theme/app_theme.dart';
 import '../../data/services/mos_id_auth_service.dart';
-import '../../data/services/mes_api_service.dart';
 
 class MosIdWebViewScreen extends StatefulWidget {
   final ValueChanged<bool> onAuthResult;
@@ -36,19 +35,16 @@ class _MosIdWebViewScreenState extends State<MosIdWebViewScreen> {
   late final WebViewController _webViewController;
   final WebViewCookieManager _cookieManager = WebViewCookieManager();
   final MosIdAuthService _authService = MosIdAuthService();
-  final MesApiService _apiService = MesApiService();
 
   int _loadingProgress = 0;
   bool _isLoading = true;
-  bool _isExtracting = false;
+  bool _hasTransferred = false;
   String _currentUrl = '';
   String? _errorMessage;
   bool _canGoBack = false;
 
   bool _hasVisitedLoginPage = false;
-  bool _syncAttemptStarted = false;
-  String _statusText = '';
-  Timer? _pollingTimer;
+  Timer? _authCheckTimer;
 
   static const String _startUrl = 'https://dnevnik.mos.ru';
 
@@ -73,7 +69,7 @@ class _MosIdWebViewScreenState extends State<MosIdWebViewScreen> {
 
   @override
   void dispose() {
-    _pollingTimer?.cancel();
+    _authCheckTimer?.cancel();
     super.dispose();
   }
 
@@ -108,6 +104,7 @@ class _MosIdWebViewScreenState extends State<MosIdWebViewScreen> {
               _hasVisitedLoginPage = true;
             }
             _injectFixes();
+            _evaluateAuthStatus(url);
           },
           onPageFinished: (url) async {
             if (mounted) {
@@ -122,11 +119,11 @@ class _MosIdWebViewScreenState extends State<MosIdWebViewScreen> {
               _hasVisitedLoginPage = true;
             }
             _injectFixes();
-            _checkIfAuthCompleted(url);
+            _evaluateAuthStatus(url);
           },
           onWebResourceError: (WebResourceError error) {
             if (error.errorCode == -999) return;
-            if (_isExtracting) return;
+            if (_hasTransferred) return;
             if (mounted) {
               setState(() {
                 _errorMessage = error.description;
@@ -142,277 +139,160 @@ class _MosIdWebViewScreenState extends State<MosIdWebViewScreen> {
       ..loadRequest(Uri.parse(_startUrl));
   }
 
-  void _checkIfAuthCompleted(String url) {
-    final isBackOnService = url.contains('dnevnik.mos.ru') ||
-        url.contains('school.mos.ru');
-    final isStillOnLogin =
-        url.contains('login.mos.ru') || url.contains('/sps/');
-
-    if (isBackOnService && !isStillOnLogin && _hasVisitedLoginPage && !_syncAttemptStarted) {
-      _startDataSyncLoop();
-    }
-  }
-
   Future<void> _injectFixes() async {
     try {
       await _webViewController.runJavaScript(_jsPopupFix);
     } catch (_) {}
   }
 
-  void _startDataSyncLoop() {
-    _syncAttemptStarted = true;
-    setState(() {
-      _statusText = 'Авторизация успешна. Загружаем данные...';
-    });
+  void _evaluateAuthStatus(String url) {
+    if (_hasTransferred) return;
 
-    int attempts = 0;
-    _pollingTimer?.cancel();
-    _pollingTimer = Timer.periodic(const Duration(milliseconds: 1600), (timer) async {
-      attempts++;
-      final success = await _attemptDataExtraction();
+    final isBackOnDiary = url.contains('dnevnik.mos.ru') ||
+        url.contains('school.mos.ru');
+    final isStillOnLogin =
+        url.contains('login.mos.ru') || url.contains('/sps/');
+
+    if (isBackOnDiary && !isStillOnLogin && _hasVisitedLoginPage) {
+      // Start rapid, lightweight check of cookies and localStorage
+      _startRapidAuthCheck();
+    }
+  }
+
+  void _startRapidAuthCheck() {
+    _authCheckTimer?.cancel();
+    int count = 0;
+    _authCheckTimer = Timer.periodic(const Duration(milliseconds: 500), (timer) async {
+      count++;
+      if (_hasTransferred) {
+        timer.cancel();
+        return;
+      }
+
+      final success = await _checkAndSaveSession();
       if (success) {
         timer.cancel();
-        if (mounted) {
-          setState(() {
-            _statusText = 'Данные получены! Открываем дневник...';
-          });
-          await Future.delayed(const Duration(milliseconds: 500));
-          widget.onAuthResult(true);
-        }
-      } else if (attempts >= 12) {
+        _completeLogin();
+      } else if (count >= 20) {
+        // Stop polling after 10 seconds, user can still use manual button
         timer.cancel();
-        if (mounted) {
-          setState(() {
-            _statusText = 'Дневник открыт. Нажмите зелёную кнопку ниже.';
-          });
-        }
       }
     });
   }
 
-  Future<String> _extractAllHttpCookies() async {
-    final domains = [
-      Uri.parse('https://school.mos.ru'),
-      Uri.parse('https://dnevnik.mos.ru'),
-      Uri.parse('https://mos.ru'),
-    ];
-
-    final Map<String, String> cookiesMap = {};
-    for (final domain in domains) {
-      try {
-        final list = await _cookieManager.getCookies(domain: domain);
-        for (final c in list) {
-          if (c.name.isNotEmpty && c.value.isNotEmpty) {
-            cookiesMap[c.name] = c.value;
-          }
-        }
-      } catch (_) {}
-    }
-
-    return cookiesMap.entries.map((e) => '${e.key}=${e.value}').join('; ');
-  }
-
-  Future<bool> _attemptDataExtraction() async {
+  Future<bool> _checkAndSaveSession() async {
     try {
-      final httpCookies = await _extractAllHttpCookies();
+      final domains = [
+        Uri.parse('https://school.mos.ru'),
+        Uri.parse('https://dnevnik.mos.ru'),
+        Uri.parse('https://mos.ru'),
+      ];
 
-      const extractionScript = r'''
-        (async function() {
-          var cookies = '';
-          var token = '';
-          var studentId = '';
+      final Map<String, String> cookieMap = {};
+      String authToken = '';
+      String studentId = '';
 
-          try { cookies = document.cookie || ''; } catch(e) {}
+      for (final domain in domains) {
+        try {
+          final cookies = await _cookieManager.getCookies(domain: domain);
+          for (final c in cookies) {
+            if (c.name.isNotEmpty && c.value.isNotEmpty) {
+              cookieMap[c.name] = c.value;
 
-          // 1. Check localStorage
-          try {
-            for (var i = 0; i < localStorage.length; i++) {
-              var k = localStorage.key(i) || '';
-              var v = localStorage.getItem(k) || '';
-              if ((k === 'auth-token' || k === 'auth_token' || k === 'token' ||
-                   k.indexOf('auth') !== -1) && v && v.length > 20) {
-                token = v;
+              if (c.name == 'auth_token' || c.name == 'token') {
+                if (c.value.length > 10) authToken = c.value;
               }
-              if ((k === 'student_id' || k === 'studentId' || k === 'profile_id') && v) {
-                studentId = v;
-              }
-            }
-          } catch(e) {}
-
-          // 2. Try fetching profile via internal fetch (uses WebView credentials)
-          var profileData = null;
-          try {
-            var pRes = await fetch('https://school.mos.ru/api/family/web/v1/profile', {
-              headers: { 'x-mes-subsystem': 'familyweb' },
-              credentials: 'include'
-            });
-            if (pRes.ok) {
-              profileData = await pRes.json();
-              if (profileData) {
-                var children = profileData['children'] || profileData['payload'] || [];
-                if (Array.isArray(children) && children.length > 0) {
-                  studentId = String(children[0]['id'] || children[0]['student_id'] || '');
-                }
+              if (c.name == 'profile_id' || c.name == 'student_id') {
+                if (studentId.isEmpty) studentId = c.value;
               }
             }
-          } catch(e) {}
-
-          if (!profileData) {
-            try {
-              var p2 = await fetch('/core/api/student_profiles', { credentials: 'include' });
-              if (p2.ok) profileData = await p2.json();
-            } catch(e) {}
           }
-
-          // 3. Try fetching schedule if studentId is present
-          var schedData = null;
-          if (studentId) {
-            try {
-              var now = new Date();
-              var day = now.getDay() || 7;
-              var mon = new Date(now); mon.setDate(now.getDate() - day + 1);
-              var fri = new Date(mon); fri.setDate(mon.getDate() + 4);
-              var pad = function(n) { return String(n).padStart(2,'0'); };
-              var fmt = function(d) { return d.getFullYear()+'-'+pad(d.getMonth()+1)+'-'+pad(d.getDate()); };
-              var sRes = await fetch(
-                'https://school.mos.ru/api/family/web/v1/schedule?student_id='+studentId+'&begin_date='+fmt(mon)+'&end_date='+fmt(fri),
-                { headers: {'x-mes-subsystem':'familyweb'}, credentials:'include' }
-              );
-              if (sRes.ok) schedData = await sRes.json();
-            } catch(e) {}
-          }
-
-          // 4. Try fetching marks
-          var marksData = null;
-          if (studentId) {
-            try {
-              var mRes = await fetch(
-                'https://school.mos.ru/api/family/web/v1/subject_marks?student_id='+studentId,
-                { headers: {'x-mes-subsystem':'familyweb'}, credentials:'include' }
-              );
-              if (mRes.ok) marksData = await mRes.json();
-            } catch(e) {}
-          }
-
-          // 5. Try fetching homeworks
-          var hwData = null;
-          if (studentId) {
-            try {
-              var hRes = await fetch(
-                'https://school.mos.ru/api/family/web/v1/homeworks?student_id='+studentId,
-                { headers: {'x-mes-subsystem':'familyweb'}, credentials:'include' }
-              );
-              if (hRes.ok) hwData = await hRes.json();
-            } catch(e) {}
-          }
-
-          // 6. DOM Scraper for student name and rendered lessons
-          var studentName = '';
-          var nameEl = document.querySelector('.user-name, .header__profile-name, [data-qa="user-name"], .profile__name, .user-info__name');
-          if (nameEl) studentName = nameEl.innerText.trim();
-
-          var domLessons = [];
-          try {
-            var cards = document.querySelectorAll('.schedule__lesson, .lesson, [data-qa="lesson-card"], .diary-lesson-item, .lesson-card, .schedule-item');
-            cards.forEach(function(c) {
-              var s = (c.querySelector('.subject, .lesson__subject, .title, [data-qa="lesson-name"]') || {}).innerText || '';
-              var t = (c.querySelector('.time, .lesson__time, [data-qa="lesson-time"]') || {}).innerText || '';
-              var r = (c.querySelector('.room, .lesson__room, [data-qa="lesson-room"]') || {}).innerText || '';
-              var tc = (c.querySelector('.teacher, .lesson__teacher, [data-qa="lesson-teacher"]') || {}).innerText || '';
-              var tp = (c.querySelector('.topic, .lesson__topic, [data-qa="lesson-topic"]') || {}).innerText || '';
-              if (s) {
-                domLessons.push({ subject: s.trim(), startTime: t.trim(), room: r.trim(), teacher: tc.trim(), topic: tp.trim() });
-              }
-            });
-          } catch(e) {}
-
-          return JSON.stringify({
-            token: token,
-            cookie: cookies,
-            studentId: studentId,
-            studentName: studentName,
-            profile: profileData,
-            schedules: schedData,
-            marks: marksData,
-            homeworks: hwData,
-            domLessons: domLessons
-          });
-        })()
-      ''';
-
-      final result =
-          await _webViewController.runJavaScriptReturningResult(extractionScript);
-      String rawJson = result.toString();
-      if (rawJson.startsWith('"') && rawJson.endsWith('"')) {
-        rawJson = jsonDecode(rawJson) as String;
+        } catch (_) {}
       }
 
-      final data = jsonDecode(rawJson) as Map<String, dynamic>;
-      final token = (data['token'] ?? '').toString();
-      final jsCookie = (data['cookie'] ?? '').toString();
-      final studentId = (data['studentId'] ?? '').toString();
-      final studentName = (data['studentName'] ?? '').toString();
-      final profile = data['profile'];
-      final schedules = data['schedules'];
-      final domLessons = data['domLessons'];
-
-      final combinedCookies = [httpCookies, jsCookie]
-          .where((s) => s.isNotEmpty)
-          .join('; ');
-
-      final bool hasUsefulData = (profile != null) ||
-          studentName.isNotEmpty ||
-          (schedules != null) ||
-          (domLessons is List && domLessons.isNotEmpty) ||
-          (studentId.isNotEmpty && combinedCookies.isNotEmpty);
-
-      if (hasUsefulData) {
-        final authToken = token.isNotEmpty
-            ? token
-            : (combinedCookies.isNotEmpty ? 'mos_cookie_session' : '');
-
-        if (authToken.isNotEmpty) {
-          await _authService.saveAuthSession(
-            authToken: authToken,
-            cookies: combinedCookies,
-            studentId: studentId,
+      // Check localStorage for auth-token as backup
+      if (authToken.isEmpty || studentId.isEmpty) {
+        try {
+          final res = await _webViewController.runJavaScriptReturningResult(
+            r'''
+            (function() {
+              var t = '';
+              var s = '';
+              try {
+                t = localStorage.getItem('auth-token') || localStorage.getItem('token') || '';
+                s = localStorage.getItem('student_id') || localStorage.getItem('profile_id') || '';
+              } catch(e) {}
+              return JSON.stringify({t: t, s: s});
+            })()
+            ''',
           );
-        }
+          String raw = res.toString();
+          if (raw.startsWith('"') && raw.endsWith('"')) {
+            raw = raw.substring(1, raw.length - 1).replaceAll(r'\"', '"');
+          }
+          final decoded = jsonDecode(raw);
+          if (authToken.isEmpty && decoded['t'] != null && decoded['t'].toString().isNotEmpty) {
+            authToken = decoded['t'].toString();
+          }
+          if (studentId.isEmpty && decoded['s'] != null && decoded['s'].toString().isNotEmpty) {
+            studentId = decoded['s'].toString();
+          }
+        } catch (_) {}
+      }
 
-        await _apiService.saveImportedBundle(data);
+      final cookieHeader =
+          cookieMap.entries.map((e) => '${e.key}=${e.value}').join('; ');
+
+      // If we have either authToken, studentId, or valid cookies on school.mos.ru
+      final bool hasAuth = authToken.isNotEmpty ||
+          (studentId.isNotEmpty && cookieHeader.isNotEmpty) ||
+          (cookieMap.containsKey('auth_token') || cookieMap.containsKey('aupd_token'));
+
+      if (hasAuth) {
+        await _authService.saveAuthSession(
+          authToken: authToken.isNotEmpty ? authToken : 'mos_authenticated',
+          cookies: cookieHeader,
+          studentId: studentId,
+        );
         return true;
       }
     } catch (_) {}
     return false;
   }
 
-  Future<void> _manualSyncAndClose() async {
-    setState(() {
-      _isExtracting = true;
-      _statusText = 'Загрузка дневника в приложение...';
-    });
+  void _completeLogin() {
+    if (_hasTransferred) return;
+    _hasTransferred = true;
+    _authCheckTimer?.cancel();
 
-    final success = await _attemptDataExtraction();
+    if (mounted) {
+      widget.onAuthResult(true);
+    }
+  }
+
+  Future<void> _manualSyncAndClose() async {
+    final success = await _checkAndSaveSession();
     if (success) {
-      if (mounted) {
-        widget.onAuthResult(true);
-      }
+      _completeLogin();
     } else {
-      final httpCookies = await _extractAllHttpCookies();
-      if (httpCookies.isNotEmpty) {
-        await _authService.saveAuthSession(
-          authToken: 'mos_cookie_session',
-          cookies: httpCookies,
-        );
-        if (mounted) {
-          widget.onAuthResult(true);
+      // Fallback: save whatever cookies exist
+      try {
+        final cookies = await _cookieManager.getCookies(
+            domain: Uri.parse('https://school.mos.ru'));
+        final cookieHeader =
+            cookies.map((c) => '${c.name}=${c.value}').join('; ');
+        if (cookieHeader.isNotEmpty) {
+          await _authService.saveAuthSession(
+            authToken: 'mos_authenticated',
+            cookies: cookieHeader,
+          );
+          _completeLogin();
+          return;
         }
-      } else {
-        setState(() {
-          _isExtracting = false;
-          _statusText = 'Не удалось получить данные. Убедитесь, что дневник открыт.';
-        });
-      }
+      } catch (_) {}
+
+      // If really nothing found, prompt reload
+      _reload();
     }
   }
 
@@ -425,14 +305,13 @@ class _MosIdWebViewScreenState extends State<MosIdWebViewScreen> {
   }
 
   void _restartLogin() {
-    _pollingTimer?.cancel();
+    _authCheckTimer?.cancel();
     setState(() {
       _errorMessage = null;
       _isLoading = true;
       _currentUrl = '';
       _hasVisitedLoginPage = false;
-      _syncAttemptStarted = false;
-      _statusText = '';
+      _hasTransferred = false;
     });
     _webViewController.loadRequest(Uri.parse(_startUrl));
   }
@@ -475,7 +354,7 @@ class _MosIdWebViewScreenState extends State<MosIdWebViewScreen> {
               onPressed: () => widget.onAuthResult(false),
               child: const Text('Отмена'),
             ),
-            if (_canGoBack && !_isExtracting) ...[
+            if (_canGoBack && !_hasTransferred) ...[
               const SizedBox(width: 8),
               CupertinoButton(
                 padding: EdgeInsets.zero,
@@ -485,7 +364,7 @@ class _MosIdWebViewScreenState extends State<MosIdWebViewScreen> {
             ],
           ],
         ),
-        trailing: _isExtracting
+        trailing: _hasTransferred
             ? const CupertinoActivityIndicator()
             : CupertinoButton(
                 padding: EdgeInsets.zero,
@@ -500,8 +379,8 @@ class _MosIdWebViewScreenState extends State<MosIdWebViewScreen> {
       child: SafeArea(
         child: Column(
           children: [
-            // Loading Progress Bar
-            if (_isLoading && !_isExtracting)
+            // Progress bar
+            if (_isLoading && !_hasTransferred)
               Container(
                 height: 2.5,
                 color: isDark
@@ -514,31 +393,8 @@ class _MosIdWebViewScreenState extends State<MosIdWebViewScreen> {
                 ),
               ),
 
-            // Status Banner if syncing or on login
-            if (_statusText.isNotEmpty)
-              Container(
-                width: double.infinity,
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                color: AppTheme.grade5Color.withValues(alpha: 0.15),
-                child: Row(
-                  children: [
-                    const CupertinoActivityIndicator(radius: 8),
-                    const SizedBox(width: 10),
-                    Expanded(
-                      child: Text(
-                        _statusText,
-                        style: const TextStyle(
-                          fontSize: 12,
-                          fontWeight: FontWeight.w600,
-                          color: AppTheme.grade5Color,
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-              )
-            else if (isOnLoginPage && !_isLoading && _errorMessage == null)
+            // Subtle helper banner on login page
+            if (isOnLoginPage && !_isLoading && _errorMessage == null)
               Container(
                 width: double.infinity,
                 padding:
@@ -556,7 +412,7 @@ class _MosIdWebViewScreenState extends State<MosIdWebViewScreen> {
                     const SizedBox(width: 8),
                     Expanded(
                       child: Text(
-                        'Войдите в Mos.ID — дневник откроется в приложении',
+                        'Войдите в Mos.ID — дневник откроется автоматически',
                         style: TextStyle(fontSize: 12, color: textSecondary),
                       ),
                     ),
@@ -570,7 +426,7 @@ class _MosIdWebViewScreenState extends State<MosIdWebViewScreen> {
                 children: [
                   WebViewWidget(controller: _webViewController),
 
-                  // Initial Loading Overlay
+                  // Initial Loading
                   if (_isLoading && _currentUrl.isEmpty)
                     Container(
                       color: CupertinoColors.white,
@@ -593,43 +449,8 @@ class _MosIdWebViewScreenState extends State<MosIdWebViewScreen> {
                       ),
                     ),
 
-                  // Full Extracting Overlay (only when manual sync or transitioning)
-                  if (_isExtracting)
-                    Container(
-                      color:
-                          CupertinoColors.black.withValues(alpha: 0.88),
-                      child: const Center(
-                        child: Column(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            CupertinoActivityIndicator(
-                              radius: 20,
-                              color: CupertinoColors.white,
-                            ),
-                            SizedBox(height: 20),
-                            Text(
-                              'Синхронизация с МЭШ...',
-                              style: TextStyle(
-                                fontSize: 20,
-                                color: CupertinoColors.white,
-                                fontWeight: FontWeight.bold,
-                              ),
-                            ),
-                            SizedBox(height: 8),
-                            Text(
-                              'Загружаем расписание и оценки в приложение',
-                              style: TextStyle(
-                                fontSize: 13,
-                                color: CupertinoColors.systemGrey,
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                    ),
-
-                  // Prominent Action Button: appears when diary page is open
-                  if (isDiaryVisible && !_isExtracting)
+                  // Manual Sync button as backup if diary is already open
+                  if (isDiaryVisible && !_hasTransferred)
                     Positioned(
                       left: 16,
                       right: 16,
@@ -661,8 +482,8 @@ class _MosIdWebViewScreenState extends State<MosIdWebViewScreen> {
                       ),
                     ),
 
-                  // Error Overlay
-                  if (_errorMessage != null && !_isExtracting)
+                  // Error Display
+                  if (_errorMessage != null && !_hasTransferred)
                     Container(
                       color: CupertinoColors.white,
                       padding: const EdgeInsets.all(24),
@@ -686,7 +507,7 @@ class _MosIdWebViewScreenState extends State<MosIdWebViewScreen> {
                             ),
                             const SizedBox(height: 8),
                             const Text(
-                              'Убедитесь, что интернет включён и сайт mos.ru доступен.',
+                              'Убедитесь, что интернет подключён и сайт mos.ru доступен.',
                               textAlign: TextAlign.center,
                               style: TextStyle(
                                 fontSize: 13,
