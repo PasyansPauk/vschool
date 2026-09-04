@@ -119,5 +119,30 @@ class CacheService {
     await prefs.remove(_keyHomework);
     await prefs.remove(_keyLastSync);
     await prefs.remove(_keyAuthToken);
+    await prefs.remove(_keyCookies);
+    await prefs.remove(_keyStudentId);
+  }
+
+  static const String _keyCookies = 'cache_cookies';
+  static const String _keyStudentId = 'cache_student_id';
+
+  Future<void> saveCookies(String cookies) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_keyCookies, cookies);
+  }
+
+  Future<String?> getCookies() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getString(_keyCookies);
+  }
+
+  Future<void> saveStudentId(String id) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_keyStudentId, id);
+  }
+
+  Future<String?> getStudentId() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getString(_keyStudentId);
   }
 }

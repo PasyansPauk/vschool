@@ -1,10 +1,14 @@
 import 'dart:async';
+import 'dart:convert';
 import 'package:http/http.dart' as http;
+import 'package:intl/intl.dart';
 import '../models/school_day_schedule.dart';
 import '../models/lesson.dart';
 import '../models/grade_item.dart';
 import '../models/subject_summary.dart';
 import '../models/homework_item.dart';
+import '../models/user_profile.dart';
+import 'cache_service.dart';
 
 class MesApiException implements Exception {
   final String message;
@@ -17,17 +21,75 @@ class MesApiException implements Exception {
 }
 
 class MesApiService {
+  final CacheService _cacheService;
+
+  MesApiService({CacheService? cacheService})
+      : _cacheService = cacheService ?? CacheService();
+
+  static const String _meshBaseUrl = 'https://school.mos.ru/api/family/web/v1';
+
+  Future<Map<String, String>> _getHeaders() async {
+    final token = await _cacheService.getAuthToken();
+    final cookies = await _cacheService.getCookies();
+
+    final headers = {
+      'Accept': 'application/json',
+      'Content-Type': 'application/json',
+      'x-mes-subsystem': 'familyweb',
+      'User-Agent':
+          'Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1',
+    };
+
+    if (token != null && token.isNotEmpty) {
+      headers['auth-token'] = token;
+      headers['Authorization'] = 'Bearer $token';
+    }
+    if (cookies != null && cookies.isNotEmpty) {
+      headers['Cookie'] = cookies;
+    }
+
+    return headers;
+  }
+
   Future<bool> checkConnection() async {
     try {
       final response = await http
           .get(Uri.parse('https://school.mos.ru'))
-          .timeout(const Duration(seconds: 3));
+          .timeout(const Duration(seconds: 4));
       return response.statusCode >= 200 && response.statusCode < 500;
     } catch (_) {
       return false;
     }
   }
 
+  /// Fetches the real student profile from official МЭШ
+  Future<UserProfile?> fetchUserProfile() async {
+    final token = await _cacheService.getAuthToken();
+    if (token == null || token.isEmpty) return null;
+
+    try {
+      final headers = await _getHeaders();
+      final response = await http
+          .get(Uri.parse('$_meshBaseUrl/profile'), headers: headers)
+          .timeout(const Duration(seconds: 6));
+
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body) as Map<String, dynamic>;
+        final profile = UserProfile.fromMeshJson(data);
+        await _cacheService.saveProfile(profile);
+
+        // Save student ID if found in profile
+        if (profile.id.isNotEmpty) {
+          await _cacheService.saveStudentId(profile.id);
+        }
+        return profile;
+      }
+    } catch (_) {}
+    return null;
+  }
+
+  /// Fetches real schedules from official МЭШ API.
+  /// Strictly returns real data — no random or mock generation.
   Future<List<SchoolDaySchedule>> fetchSchedules() async {
     final hasNet = await checkConnection();
     if (!hasNet) {
@@ -37,578 +99,196 @@ class MesApiService {
       );
     }
 
-    // High fidelity МЭШ schedule data for the week
+    final token = await _cacheService.getAuthToken();
+    if (token == null || token.isEmpty) {
+      // User is not yet authenticated in Mos.ID
+      return [];
+    }
+
+    final studentId = await _cacheService.getStudentId() ?? '';
     final now = DateTime.now();
-    // Monday of current week
     final monday = now.subtract(Duration(days: now.weekday - 1));
+    final friday = monday.add(const Duration(days: 4));
+    final dateFormat = DateFormat('yyyy-MM-dd');
 
-    return [
-      _buildMondaySchedule(monday),
-      _buildTuesdaySchedule(monday.add(const Duration(days: 1))),
-      _buildWednesdaySchedule(monday.add(const Duration(days: 2))),
-      _buildThursdaySchedule(monday.add(const Duration(days: 3))),
-      _buildFridaySchedule(monday.add(const Duration(days: 4))),
-    ];
+    try {
+      final headers = await _getHeaders();
+      final url = Uri.parse(
+        '$_meshBaseUrl/schedule?student_id=$studentId&begin_date=${dateFormat.format(monday)}&end_date=${dateFormat.format(friday)}',
+      );
+
+      final response =
+          await http.get(url, headers: headers).timeout(const Duration(seconds: 6));
+
+      if (response.statusCode == 200) {
+        final body = jsonDecode(response.body);
+        final List<SchoolDaySchedule> parsed = [];
+
+        if (body is Map && body.containsKey('activities')) {
+          final activities = body['activities'] as List<dynamic>;
+          // Group lessons by day
+          for (int i = 0; i < 5; i++) {
+            final dayDate = monday.add(Duration(days: i));
+            final dayStr = dateFormat.format(dayDate);
+            final dayLessons = <Lesson>[];
+
+            for (final act in activities) {
+              if (act is Map && act['date'] == dayStr) {
+                final numVal =
+                    (act['lesson_number'] as num?)?.toInt() ?? (dayLessons.length + 1);
+                dayLessons.add(Lesson(
+                  number: numVal,
+                  subject: (act['subject_name'] ?? act['title'] ?? 'Урок').toString(),
+                  room: (act['room_number'] ?? act['room'] ?? '').toString(),
+                  teacher: (act['teacher_name'] ?? '').toString(),
+                  startTime: (act['begin_time'] ?? '08:30').toString(),
+                  endTime: (act['end_time'] ?? '09:15').toString(),
+                  topic: (act['lesson_topic'] ?? act['topic'] ?? '').toString(),
+                  homework: act['homework']?.toString(),
+                ));
+              }
+            }
+
+            dayLessons.sort((a, b) => a.number.compareTo(b.number));
+
+            parsed.add(SchoolDaySchedule(
+              date: dayDate,
+              dayName: _dayName(dayDate.weekday),
+              lessons: dayLessons,
+            ));
+          }
+          return parsed;
+        }
+      }
+    } catch (_) {}
+
+    return [];
   }
 
+  /// Fetches real subject grades from official МЭШ.
+  /// Strictly returns real data — no random or mock generation.
   Future<List<SubjectSummary>> fetchGrades() async {
-    final now = DateTime.now();
-    return [
-      SubjectSummary(
-        subject: 'Алгебра и начала анализа',
-        teacher: 'Смирнова Елена Викторовна',
-        grades: [
-          GradeItem(
-            id: 'g1',
-            subject: 'Алгебра и начала анализа',
-            value: 5,
-            weight: 2,
-            date: now.subtract(const Duration(days: 1)),
-            topic: 'Контрольная работа: Производная сложной функции',
-          ),
-          GradeItem(
-            id: 'g2',
-            subject: 'Алгебра и начала анализа',
-            value: 4,
-            weight: 1,
-            date: now.subtract(const Duration(days: 3)),
-            topic: 'Самостоятельная работа: Тригонометрические уравнения',
-          ),
-          GradeItem(
-            id: 'g3',
-            subject: 'Алгебра и начала анализа',
-            value: 5,
-            weight: 1,
-            date: now.subtract(const Duration(days: 6)),
-            topic: 'Ответ у доски',
-          ),
-        ],
-      ),
-      SubjectSummary(
-        subject: 'Информатика и ИКТ',
-        teacher: 'Кузнецов Артем Дмитриевич',
-        grades: [
-          GradeItem(
-            id: 'g4',
-            subject: 'Информатика и ИКТ',
-            value: 5,
-            weight: 3,
-            date: now.subtract(const Duration(days: 2)),
-            topic: 'Проектная работа: Алгоритмы на графах',
-          ),
-          GradeItem(
-            id: 'g5',
-            subject: 'Информатика и ИКТ',
-            value: 5,
-            weight: 1,
-            date: now.subtract(const Duration(days: 5)),
-            topic: 'Практикум в компьютерном классе',
-          ),
-        ],
-      ),
-      SubjectSummary(
-        subject: 'Физика',
-        teacher: 'Васильев Игорь Олегович',
-        grades: [
-          GradeItem(
-            id: 'g6',
-            subject: 'Физика',
-            value: 4,
-            weight: 2,
-            date: now.subtract(const Duration(days: 2)),
-            topic: 'Лабораторная работа: Законы термодинамики',
-          ),
-          GradeItem(
-            id: 'g7',
-            subject: 'Физика',
-            value: 5,
-            weight: 1,
-            date: now.subtract(const Duration(days: 4)),
-            topic: 'Тестирование: Идеальный газ',
-          ),
-          GradeItem(
-            id: 'g8',
-            subject: 'Физика',
-            value: 4,
-            weight: 1,
-            date: now.subtract(const Duration(days: 8)),
-            topic: 'Фронтальный опрос',
-          ),
-        ],
-      ),
-      SubjectSummary(
-        subject: 'Русский язык',
-        teacher: 'Морозова Ольга Николаевна',
-        grades: [
-          GradeItem(
-            id: 'g9',
-            subject: 'Русский язык',
-            value: 5,
-            weight: 2,
-            date: now.subtract(const Duration(days: 3)),
-            topic: 'Словарный и орфографический диктант',
-          ),
-          GradeItem(
-            id: 'g10',
-            subject: 'Русский язык',
-            value: 5,
-            weight: 1,
-            date: now.subtract(const Duration(days: 7)),
-            topic: 'Синтаксический разбор предложения',
-          ),
-        ],
-      ),
-      SubjectSummary(
-        subject: 'Английский язык',
-        teacher: 'Соколова Екатерина Павловна',
-        grades: [
-          GradeItem(
-            id: 'g11',
-            subject: 'Английский язык',
-            value: 5,
-            weight: 2,
-            date: now.subtract(const Duration(days: 1)),
-            topic: 'Essay: Technology in Modern Life',
-          ),
-          GradeItem(
-            id: 'g12',
-            subject: 'Английский язык',
-            value: 4,
-            weight: 1,
-            date: now.subtract(const Duration(days: 4)),
-            topic: 'Speaking & Vocabulary Check',
-          ),
-        ],
-      ),
-      SubjectSummary(
-        subject: 'История России',
-        teacher: 'Белов Михаил Сергеевич',
-        grades: [
-          GradeItem(
-            id: 'g13',
-            subject: 'История России',
-            value: 5,
-            weight: 2,
-            date: now.subtract(const Duration(days: 4)),
-            topic: 'Контрольный тест: Реформы Александра II',
-          ),
-        ],
-      ),
-      SubjectSummary(
-        subject: 'Химия',
-        teacher: 'Попова Татьяна Григорьевна',
-        grades: [
-          GradeItem(
-            id: 'g14',
-            subject: 'Химия',
-            value: 4,
-            weight: 2,
-            date: now.subtract(const Duration(days: 5)),
-            topic: 'Лабораторный опыт: Свойства углеводородов',
-          ),
-        ],
-      ),
-    ];
+    final token = await _cacheService.getAuthToken();
+    if (token == null || token.isEmpty) return [];
+
+    final studentId = await _cacheService.getStudentId() ?? '';
+    try {
+      final headers = await _getHeaders();
+      final url = Uri.parse('$_meshBaseUrl/subject_marks?student_id=$studentId');
+      final response =
+          await http.get(url, headers: headers).timeout(const Duration(seconds: 6));
+
+      if (response.statusCode == 200) {
+        final body = jsonDecode(response.body);
+        final List<SubjectSummary> result = [];
+
+        if (body is Map && body.containsKey('payload')) {
+          final payload = body['payload'] as List<dynamic>;
+          for (final item in payload) {
+            if (item is Map) {
+              final subjectName = (item['subject_name'] ?? '').toString();
+              final teacher = (item['teacher_name'] ?? '').toString();
+              final marksRaw = (item['marks'] as List<dynamic>?) ?? [];
+
+              final gradeItems = <GradeItem>[];
+              for (final m in marksRaw) {
+                if (m is Map) {
+                  final val = int.tryParse((m['value'] ?? '').toString()) ?? 0;
+                  final weight = int.tryParse((m['weight'] ?? '1').toString()) ?? 1;
+                  final dateStr = (m['date'] ?? '').toString();
+                  final date = DateTime.tryParse(dateStr) ?? DateTime.now();
+
+                  if (val > 0) {
+                    gradeItems.add(GradeItem(
+                      id: (m['id'] ?? '').toString(),
+                      subject: subjectName,
+                      value: val,
+                      weight: weight,
+                      date: date,
+                      topic: (m['topic'] ?? '').toString(),
+                    ));
+                  }
+                }
+              }
+
+              if (subjectName.isNotEmpty) {
+                result.add(SubjectSummary(
+                  subject: subjectName,
+                  teacher: teacher,
+                  grades: gradeItems,
+                ));
+              }
+            }
+          }
+          return result;
+        }
+      }
+    } catch (_) {}
+
+    return [];
   }
 
+  /// Fetches real homework assignments from official МЭШ.
+  /// Strictly returns real data — no random or mock generation.
   Future<List<HomeworkItem>> fetchHomeworks() async {
-    final now = DateTime.now();
-    return [
-      HomeworkItem(
-        id: 'hw1',
-        subject: 'Алгебра и начала анализа',
-        description: 'Параграф 14, № 14.15(а, б), 14.18, 14.22. Подготовиться к устному опросу по свойствам логарифмов.',
-        dueDate: now.add(const Duration(days: 1)),
-        isCompleted: false,
-        attachmentsCount: 1,
-      ),
-      HomeworkItem(
-        id: 'hw2',
-        subject: 'Физика',
-        description: 'Учебник § 28, задачи в сборнике Рымкевича № 524, 529. Записать формулы адиабатного процесса.',
-        dueDate: now.add(const Duration(days: 1)),
-        isCompleted: false,
-        attachmentsCount: 0,
-      ),
-      HomeworkItem(
-        id: 'hw3',
-        subject: 'Информатика и ИКТ',
-        description: 'Решить задачи на Python в системе Яндекс.Контест (блок 4: Динамическое программирование).',
-        dueDate: now.add(const Duration(days: 2)),
-        isCompleted: true,
-        attachmentsCount: 2,
-      ),
-      HomeworkItem(
-        id: 'hw4',
-        subject: 'Английский язык',
-        description: 'Student’s Book p. 74 ex. 3, 4 (read and translate text). Learn new phrasal verbs for Unit 6.',
-        dueDate: now.add(const Duration(days: 2)),
-        isCompleted: false,
-        attachmentsCount: 0,
-      ),
-      HomeworkItem(
-        id: 'hw5',
-        subject: 'Литература',
-        description: 'Прочитать главы 12-16 романа Л.Н. Толстого «Война и мир» (том 2). Выписать цитаты к образу Андрея Болконского.',
-        dueDate: now.add(const Duration(days: 3)),
-        isCompleted: false,
-        attachmentsCount: 0,
-      ),
-    ];
+    final token = await _cacheService.getAuthToken();
+    if (token == null || token.isEmpty) return [];
+
+    final studentId = await _cacheService.getStudentId() ?? '';
+    try {
+      final headers = await _getHeaders();
+      final url = Uri.parse('$_meshBaseUrl/homeworks?student_id=$studentId');
+      final response =
+          await http.get(url, headers: headers).timeout(const Duration(seconds: 6));
+
+      if (response.statusCode == 200) {
+        final body = jsonDecode(response.body);
+        final List<HomeworkItem> result = [];
+
+        if (body is Map && body.containsKey('payload')) {
+          final payload = body['payload'] as List<dynamic>;
+          for (final hw in payload) {
+            if (hw is Map) {
+              final dateStr = (hw['date'] ?? '').toString();
+              final date = DateTime.tryParse(dateStr) ?? DateTime.now();
+
+              result.add(HomeworkItem(
+                id: (hw['id'] ?? '').toString(),
+                subject: (hw['subject_name'] ?? 'Предмет').toString(),
+                description: (hw['description'] ?? hw['task'] ?? '').toString(),
+                dueDate: date,
+                isCompleted: hw['is_done'] == true,
+                attachmentsCount:
+                    (hw['materials'] as List<dynamic>?)?.length ?? 0,
+              ));
+            }
+          }
+          return result;
+        }
+      }
+    } catch (_) {}
+
+    return [];
   }
 
-  SchoolDaySchedule _buildMondaySchedule(DateTime date) {
-    return SchoolDaySchedule(
-      date: date,
-      dayName: 'Понедельник',
-      lessons: [
-        const Lesson(
-          number: 1,
-          subject: 'Разговоры о важном',
-          startTime: '08:30',
-          endTime: '09:15',
-          room: 'Каб. 304',
-          teacher: 'Смирнова Елена Викторовна',
-          topic: 'Россия — взгляд в будущее. Технологический суверенитет',
-        ),
-        Lesson(
-          number: 2,
-          subject: 'Алгебра и начала анализа',
-          startTime: '09:25',
-          endTime: '10:10',
-          room: 'Каб. 304',
-          teacher: 'Смирнова Елена Викторовна',
-          topic: 'Экстремумы функций и точки перегиба',
-          homework: 'Учебник № 18.2 – 18.5',
-          grade: GradeItem(
-            id: 'g_mon_1',
-            subject: 'Алгебра и начала анализа',
-            value: 5,
-            weight: 2,
-            date: date,
-            topic: 'Самостоятельная работа',
-          ),
-        ),
-        const Lesson(
-          number: 3,
-          subject: 'Физика',
-          startTime: '10:30',
-          endTime: '11:15',
-          room: 'Каб. 210 (Лаборатория)',
-          teacher: 'Васильев Игорь Олегович',
-          topic: 'Применение первого начала термодинамики к изопроцессам',
-          homework: '§ 32, задачи № 412, 415',
-        ),
-        const Lesson(
-          number: 4,
-          subject: 'Русский язык',
-          startTime: '11:35',
-          endTime: '12:20',
-          room: 'Каб. 408',
-          teacher: 'Морозова Ольга Николаевна',
-          topic: 'Синтаксические нормы сложного предложения',
-          homework: 'Упр. 214 по заданию',
-        ),
-        Lesson(
-          number: 5,
-          subject: 'Информатика и ИКТ',
-          startTime: '12:40',
-          endTime: '13:25',
-          room: 'Каб. 201 (Компьютерный)',
-          teacher: 'Кузнецов Артем Дмитриевич',
-          topic: 'Рекурсивные алгоритмы и стек вызовов',
-          homework: 'Задачи в контесте',
-          grade: GradeItem(
-            id: 'g_mon_2',
-            subject: 'Информатика и ИКТ',
-            value: 5,
-            weight: 3,
-            date: date,
-            topic: 'Практическая работа за ПК',
-          ),
-        ),
-        const Lesson(
-          number: 6,
-          subject: 'История России',
-          startTime: '13:35',
-          endTime: '14:20',
-          room: 'Каб. 102',
-          teacher: 'Белов Михаил Сергеевич',
-          topic: 'Общественная мысль и политические движения в XIX веке',
-        ),
-        const Lesson(
-          number: 7,
-          subject: 'Физическая культура',
-          startTime: '14:30',
-          endTime: '15:15',
-          room: 'Большой спортивный зал',
-          teacher: 'Зайцев Андрей Константинович',
-          topic: 'Волейбол: отработка тактических взаимодействий',
-        ),
-      ],
-    );
-  }
-
-  SchoolDaySchedule _buildTuesdaySchedule(DateTime date) {
-    return SchoolDaySchedule(
-      date: date,
-      dayName: 'Вторник',
-      lessons: [
-        const Lesson(
-          number: 1,
-          subject: 'Геометрия',
-          startTime: '08:30',
-          endTime: '09:15',
-          room: 'Каб. 304',
-          teacher: 'Смирнова Елена Викторовна',
-          topic: 'Теорема о трех перпендикулярах и ее приложения',
-          homework: '№ 154, 156',
-        ),
-        Lesson(
-          number: 2,
-          subject: 'Английский язык',
-          startTime: '09:25',
-          endTime: '10:10',
-          room: 'Каб. 312',
-          teacher: 'Соколова Екатерина Павловна',
-          topic: 'Scientific discoveries that shaped humanity',
-          homework: 'Workbook p. 45',
-          grade: GradeItem(
-            id: 'g_tue_1',
-            subject: 'Английский язык',
-            value: 4,
-            weight: 1,
-            date: date,
-            topic: 'Чтение и перевод текста',
-          ),
-        ),
-        const Lesson(
-          number: 3,
-          subject: 'Химия',
-          startTime: '10:30',
-          endTime: '11:15',
-          room: 'Каб. 215',
-          teacher: 'Попова Татьяна Григорьевна',
-          topic: 'Окислительно-восстановительные реакции в органике',
-          homework: '§ 12, упр. 4, 5',
-        ),
-        const Lesson(
-          number: 4,
-          subject: 'Литература',
-          startTime: '11:35',
-          endTime: '12:20',
-          room: 'Каб. 408',
-          teacher: 'Морозова Ольга Николаевна',
-          topic: 'Философия истории в романе «Война и мир»',
-          homework: 'Анализ эпизода Шенграбенского сражения',
-        ),
-        const Lesson(
-          number: 5,
-          subject: 'Биология',
-          startTime: '12:40',
-          endTime: '13:25',
-          room: 'Каб. 108',
-          teacher: 'Громова Наталья Викторовна',
-          topic: 'Митоз и мейоз: фазы клеточного деления',
-        ),
-        const Lesson(
-          number: 6,
-          subject: 'Обществознание',
-          startTime: '13:35',
-          endTime: '14:20',
-          room: 'Каб. 102',
-          teacher: 'Белов Михаил Сергеевич',
-          topic: 'Экономические циклы и государственное регулирование',
-        ),
-      ],
-    );
-  }
-
-  SchoolDaySchedule _buildWednesdaySchedule(DateTime date) {
-    return SchoolDaySchedule(
-      date: date,
-      dayName: 'Среда',
-      lessons: [
-        const Lesson(
-          number: 1,
-          subject: 'Информатика и ИКТ',
-          startTime: '08:30',
-          endTime: '09:15',
-          room: 'Каб. 201',
-          teacher: 'Кузнецов Артем Дмитриевич',
-          topic: 'Олимпиадное программирование на Python',
-        ),
-        const Lesson(
-          number: 2,
-          subject: 'Алгебра и начала анализа',
-          startTime: '09:25',
-          endTime: '10:10',
-          room: 'Каб. 304',
-          teacher: 'Смирнова Елена Викторовна',
-          topic: 'Наибольшее и наименьшее значения функции на отрезке',
-        ),
-        Lesson(
-          number: 3,
-          subject: 'Физика',
-          startTime: '10:30',
-          endTime: '11:15',
-          room: 'Каб. 210',
-          teacher: 'Васильев Игорь Олегович',
-          topic: 'Тепловые двигатели и цикл Карно',
-          grade: GradeItem(
-            id: 'g_wed_1',
-            subject: 'Физика',
-            value: 5,
-            weight: 2,
-            date: date,
-            topic: 'Физический диктант',
-          ),
-        ),
-        const Lesson(
-          number: 4,
-          subject: 'Английский язык',
-          startTime: '11:35',
-          endTime: '12:20',
-          room: 'Каб. 312',
-          teacher: 'Соколова Екатерина Павловна',
-          topic: 'Writing: Opinion Essay preparation',
-        ),
-        const Lesson(
-          number: 5,
-          subject: 'История России',
-          startTime: '12:40',
-          endTime: '13:25',
-          room: 'Каб. 102',
-          teacher: 'Белов Михаил Сергеевич',
-          topic: 'Внешняя политика Российской империи во второй половине XIX в.',
-        ),
-        const Lesson(
-          number: 6,
-          subject: 'Физическая культура',
-          startTime: '13:35',
-          endTime: '14:20',
-          room: 'Спортивный зал',
-          teacher: 'Зайцев Андрей Константинович',
-          topic: 'Легкая атлетика: бег на выносливость',
-        ),
-      ],
-    );
-  }
-
-  SchoolDaySchedule _buildThursdaySchedule(DateTime date) {
-    return SchoolDaySchedule(
-      date: date,
-      dayName: 'Четверг',
-      lessons: [
-        const Lesson(
-          number: 1,
-          subject: 'Геометрия',
-          startTime: '08:30',
-          endTime: '09:15',
-          room: 'Каб. 304',
-          teacher: 'Смирнова Елена Викторовна',
-          topic: 'Угол между прямой и плоскостью',
-        ),
-        const Lesson(
-          number: 2,
-          subject: 'Русский язык',
-          startTime: '09:25',
-          endTime: '10:10',
-          room: 'Каб. 408',
-          teacher: 'Морозова Ольга Николаевна',
-          topic: 'Пунктуация в бессоюзных сложных предложениях',
-        ),
-        const Lesson(
-          number: 3,
-          subject: 'Литература',
-          startTime: '10:30',
-          endTime: '11:15',
-          room: 'Каб. 408',
-          teacher: 'Морозова Ольга Николаевна',
-          topic: 'Образ Наташи Ростовой и тема семейного счастья',
-        ),
-        const Lesson(
-          number: 4,
-          subject: 'Биология',
-          startTime: '11:35',
-          endTime: '12:20',
-          room: 'Каб. 108',
-          teacher: 'Громова Наталья Викторовна',
-          topic: 'Генетический код и биосинтез белка',
-        ),
-        const Lesson(
-          number: 5,
-          subject: 'Химия',
-          startTime: '12:40',
-          endTime: '13:25',
-          room: 'Каб. 215',
-          teacher: 'Попова Татьяна Григорьевна',
-          topic: 'Практическая работа: Распознавание неорганических веществ',
-        ),
-        const Lesson(
-          number: 6,
-          subject: 'Информатика и ИКТ',
-          startTime: '13:35',
-          endTime: '14:20',
-          room: 'Каб. 201',
-          teacher: 'Кузнецов Артем Дмитриевич',
-          topic: 'Базы данных и запросы SQL в Python',
-        ),
-      ],
-    );
-  }
-
-  SchoolDaySchedule _buildFridaySchedule(DateTime date) {
-    return SchoolDaySchedule(
-      date: date,
-      dayName: 'Пятница',
-      lessons: [
-        const Lesson(
-          number: 1,
-          subject: 'Алгебра и начала анализа',
-          startTime: '08:30',
-          endTime: '09:15',
-          room: 'Каб. 304',
-          teacher: 'Смирнова Елена Викторовна',
-          topic: 'Итоговое занятие недели по дифференциальному исчислению',
-        ),
-        const Lesson(
-          number: 2,
-          subject: 'Физика',
-          startTime: '09:25',
-          endTime: '10:10',
-          room: 'Каб. 210',
-          teacher: 'Васильев Игорь Олегович',
-          topic: 'Решение расчетных задач по молекулярной физике',
-        ),
-        const Lesson(
-          number: 3,
-          subject: 'Английский язык',
-          startTime: '10:30',
-          endTime: '11:15',
-          room: 'Каб. 312',
-          teacher: 'Соколова Екатерина Павловна',
-          topic: 'Grammar review: Conditionals Type 2 and 3',
-        ),
-        const Lesson(
-          number: 4,
-          subject: 'Обществознание',
-          startTime: '11:35',
-          endTime: '12:20',
-          room: 'Каб. 102',
-          teacher: 'Белов Михаил Сергеевич',
-          topic: 'Конституционные основы РФ и права человека',
-        ),
-        const Lesson(
-          number: 5,
-          subject: 'Физическая культура',
-          startTime: '12:40',
-          endTime: '13:25',
-          room: 'Спортивный зал',
-          teacher: 'Зайцев Андрей Константинович',
-          topic: 'Итоговый турнир по баскетболу',
-        ),
-      ],
-    );
+  String _dayName(int weekday) {
+    switch (weekday) {
+      case DateTime.monday:
+        return 'Понедельник';
+      case DateTime.tuesday:
+        return 'Вторник';
+      case DateTime.wednesday:
+        return 'Среда';
+      case DateTime.thursday:
+        return 'Четверг';
+      case DateTime.friday:
+        return 'Пятница';
+      case DateTime.saturday:
+        return 'Суббота';
+      case DateTime.sunday:
+        return 'Воскресенье';
+      default:
+        return '';
+    }
   }
 }

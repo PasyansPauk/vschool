@@ -43,15 +43,48 @@ class UserProfile {
     );
   }
 
-  static UserProfile sample() {
-    return const UserProfile(
-      id: 'mesh_usr_94821',
-      fullName: 'Николаев Александр Сергеевич',
-      className: '10 «А» класс',
-      schoolName: 'ГБОУ Школа № 1502 «Энергия»',
-      snils: '194-382-901 88',
-      mosId: 'ID-8839104-MOS',
-      canteenBalance: 650.00,
+  factory UserProfile.fromMeshJson(Map<String, dynamic> json) {
+    String name = '';
+    String className = '';
+    String school = '';
+    String studentId = '';
+
+    if (json.containsKey('children') &&
+        json['children'] is List &&
+        (json['children'] as List).isNotEmpty) {
+      final child = (json['children'] as List).first as Map<String, dynamic>;
+      final fn = child['first_name'] ?? '';
+      final ln = child['last_name'] ?? '';
+      final mn = child['middle_name'] ?? '';
+      name = '$ln $fn $mn'.trim();
+      className = (child['class_name'] ?? child['className'] ?? '').toString();
+      if (child['school'] is Map) {
+        school = (child['school']['name'] ?? child['school']['short_name'] ?? '')
+            .toString();
+      }
+      studentId = (child['id'] ?? child['contingent_guid'] ?? '').toString();
+    } else {
+      final fn = json['first_name'] ?? json['firstName'] ?? '';
+      final ln = json['last_name'] ?? json['lastName'] ?? '';
+      final mn = json['middle_name'] ?? json['middleName'] ?? '';
+      name = '$ln $fn $mn'.trim();
+      className = (json['class_name'] ?? json['className'] ?? '').toString();
+      school = (json['school_name'] ?? json['schoolName'] ?? '').toString();
+      studentId = (json['id'] ?? json['profile_id'] ?? '').toString();
+    }
+
+    if (name.isEmpty) {
+      name = (json['fullName'] ?? json['name'] ?? 'Ученик МЭШ').toString();
+    }
+
+    return UserProfile(
+      id: studentId.isNotEmpty ? studentId : 'mesh_user',
+      fullName: name,
+      className: className,
+      schoolName: school,
+      snils: (json['snils'] ?? '').toString(),
+      mosId: (json['mos_id'] ?? json['sps_id'] ?? 'Mos.ID').toString(),
+      canteenBalance: (json['balance'] as num?)?.toDouble() ?? 0.0,
       isMosIdLinked: true,
     );
   }

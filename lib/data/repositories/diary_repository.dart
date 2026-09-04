@@ -13,7 +13,8 @@ class DiaryRepository {
     CacheService? cacheService,
     MesApiService? apiService,
   })  : _cacheService = cacheService ?? CacheService(),
-        _apiService = apiService ?? MesApiService();
+        _apiService = apiService ??
+            MesApiService(cacheService: cacheService ?? CacheService());
 
   MesApiService get apiService => _apiService;
   CacheService get cacheService => _cacheService;
@@ -21,9 +22,10 @@ class DiaryRepository {
   Future<UserProfile?> getProfile() async {
     final cached = await _cacheService.getProfile();
     if (cached != null) return cached;
-    final fallback = UserProfile.sample();
-    await _cacheService.saveProfile(fallback);
-    return fallback;
+
+    // Fetch from real МЭШ API
+    final fresh = await _apiService.fetchUserProfile();
+    return fresh;
   }
 
   Future<List<SchoolDaySchedule>> getSchedules({bool forceRefresh = false}) async {
@@ -35,29 +37,19 @@ class DiaryRepository {
 
     try {
       final fresh = await _apiService.fetchSchedules();
-      await _cacheService.saveSchedules(fresh);
-      await _cacheService.saveLastSync(DateTime.now());
-      return fresh;
+      if (fresh.isNotEmpty) {
+        await _cacheService.saveSchedules(fresh);
+        await _cacheService.saveLastSync(DateTime.now());
+        return fresh;
+      }
+      return cached ?? [];
     } on MesApiException {
       if (cached != null && cached.isNotEmpty) {
-        // Re-throw so caller can display the VPN/offline banner,
-        // while caller can still use the cached list.
         rethrow;
       }
-      // If nothing in cache, provide initial offline fallback and throw
-      final fallback = await _apiService.fetchSchedules();
-      await _cacheService.saveSchedules(fallback);
-      rethrow;
+      return [];
     } catch (_) {
-      if (cached != null && cached.isNotEmpty) {
-        throw const MesApiException(
-          'Не удалось подключиться. Проверьте интернет или выключите VPN.',
-          isVpnOrNetworkIssue: true,
-        );
-      }
-      final fallback = await _apiService.fetchSchedules();
-      await _cacheService.saveSchedules(fallback);
-      return fallback;
+      return cached ?? [];
     }
   }
 
@@ -70,15 +62,13 @@ class DiaryRepository {
 
     try {
       final fresh = await _apiService.fetchGrades();
-      await _cacheService.saveGrades(fresh);
-      return fresh;
-    } catch (_) {
-      if (cached != null && cached.isNotEmpty) {
-        return cached;
+      if (fresh.isNotEmpty) {
+        await _cacheService.saveGrades(fresh);
+        return fresh;
       }
-      final fallback = await _apiService.fetchGrades();
-      await _cacheService.saveGrades(fallback);
-      return fallback;
+      return cached ?? [];
+    } catch (_) {
+      return cached ?? [];
     }
   }
 
@@ -91,25 +81,23 @@ class DiaryRepository {
 
     try {
       final fresh = await _apiService.fetchHomeworks();
-      await _cacheService.saveHomeworks(fresh);
-      return fresh;
-    } catch (_) {
-      if (cached != null && cached.isNotEmpty) {
-        return cached;
+      if (fresh.isNotEmpty) {
+        await _cacheService.saveHomeworks(fresh);
+        return fresh;
       }
-      final fallback = await _apiService.fetchHomeworks();
-      await _cacheService.saveHomeworks(fallback);
-      return fallback;
+      return cached ?? [];
+    } catch (_) {
+      return cached ?? [];
     }
   }
 
   Future<List<HomeworkItem>> toggleHomeworkCompletion(String id) async {
-    final list = await getHomeworks();
-    final updated = list.map((item) {
-      if (item.id == id) {
-        return item.copyWith(isCompleted: !item.isCompleted);
+    final current = await _cacheService.getHomeworks() ?? [];
+    final updated = current.map((hw) {
+      if (hw.id == id) {
+        return hw.copyWith(isCompleted: !hw.isCompleted);
       }
-      return item;
+      return hw;
     }).toList();
 
     await _cacheService.saveHomeworks(updated);

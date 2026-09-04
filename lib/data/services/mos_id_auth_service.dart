@@ -1,4 +1,3 @@
-import 'package:url_launcher/url_launcher.dart';
 import 'cache_service.dart';
 import '../models/user_profile.dart';
 
@@ -8,26 +7,22 @@ class MosIdAuthService {
   MosIdAuthService({CacheService? cacheService})
       : _cacheService = cacheService ?? CacheService();
 
-  static const String mosIdLoginUrl =
-      'https://login.mos.ru/sps/login/methods/password?backUrl=https%3A%2F%2Fschool.mos.ru';
-
-  Future<bool> launchMosIdWebsite() async {
-    final uri = Uri.parse(mosIdLoginUrl);
-    try {
-      final canLaunch = await canLaunchUrl(uri);
-      if (canLaunch) {
-        return await launchUrl(uri, mode: LaunchMode.externalApplication);
-      }
-    } catch (_) {}
-    return false;
-  }
-
-  Future<UserProfile> loginWithMosIdSuccess({String? authToken}) async {
-    final token = authToken ?? 'mos_id_token_${DateTime.now().millisecondsSinceEpoch}';
-    await _cacheService.saveAuthToken(token);
-    final profile = UserProfile.sample();
-    await _cacheService.saveProfile(profile);
-    return profile;
+  Future<void> saveAuthSession({
+    required String authToken,
+    String? cookies,
+    String? studentId,
+    UserProfile? profile,
+  }) async {
+    await _cacheService.saveAuthToken(authToken);
+    if (cookies != null && cookies.isNotEmpty) {
+      await _cacheService.saveCookies(cookies);
+    }
+    if (studentId != null && studentId.isNotEmpty) {
+      await _cacheService.saveStudentId(studentId);
+    }
+    if (profile != null) {
+      await _cacheService.saveProfile(profile);
+    }
   }
 
   Future<bool> isAuthenticated() async {

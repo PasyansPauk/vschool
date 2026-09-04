@@ -345,9 +345,10 @@ class GradesScreen extends StatelessWidget {
         ),
 
         // Subject List
-        SliverList(
-          delegate: SliverChildBuilderDelegate(
-            (context, index) {
+        if (viewModel.grades.isNotEmpty)
+          SliverList(
+            delegate: SliverChildBuilderDelegate(
+              (context, index) {
               final subject = viewModel.grades[index];
               return Container(
                 margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
@@ -434,7 +435,19 @@ class GradesScreen extends StatelessWidget {
             },
             childCount: viewModel.grades.length,
           ),
-        ),
+        )
+        else
+          SliverToBoxAdapter(
+            child: Padding(
+              padding: const EdgeInsets.symmetric(vertical: 40),
+              child: Center(
+                child: Text(
+                  'Оценок в электронном дневнике пока нет',
+                  style: TextStyle(color: textSecondary, fontSize: 15),
+                ),
+              ),
+            ),
+          ),
 
         const SliverToBoxAdapter(
           child: SizedBox(height: 32),
