@@ -284,6 +284,25 @@ class MesApiService {
           }
         }
       } catch (_) {}
+    } else if (bundle.containsKey('studentName') &&
+        bundle['studentName'] != null &&
+        (bundle['studentName'] as String).isNotEmpty) {
+      try {
+        final existingProfile = await _cacheService.getProfile();
+        if (existingProfile == null || existingProfile.fullName.isEmpty) {
+          final domProfile = UserProfile(
+            id: (bundle['studentId'] ?? 'mesh_user').toString(),
+            fullName: bundle['studentName'] as String,
+            className: (bundle['className'] ?? '').toString(),
+            schoolName: (bundle['schoolName'] ?? '').toString(),
+            snils: '',
+            mosId: 'Mos.ID',
+            canteenBalance: 0.0,
+            isMosIdLinked: true,
+          );
+          await _cacheService.saveProfile(domProfile);
+        }
+      } catch (_) {}
     }
 
     // 2. Schedule
