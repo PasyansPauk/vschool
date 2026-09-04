@@ -1,45 +1,99 @@
-# Miscellaneous
-*.class
-*.log
-*.pyc
-*.swp
-.DS_Store
-.atom/
-.build/
-.buildlog/
-.history
-.svn/
-.swiftpm/
-migrate_working_dir/
-
-# IntelliJ related
-*.iml
-*.ipr
-*.iws
-.idea/
-
-# The .vscode folder contains launch configuration and tasks you configure in
-# VS Code which you may wish to be included in version control, so this line
-# is commented out by default.
-#.vscode/
-
-# Flutter/Dart/Pub related
-**/doc/api/
-**/ios/Flutter/.last_build_id
+# -----------------------------------------------------------------------------
+# Flutter & Dart Build & Cache Artifacts
+# -----------------------------------------------------------------------------
 .dart_tool/
+.packages
+build/
+.flutter-plugins
 .flutter-plugins-dependencies
 .pub-cache/
 .pub/
-/build/
-/coverage/
+doc/api/
+coverage/
+*.lock.db
 
-# Symbolication related
+# Symbolication & Obfuscation artifacts
 app.*.symbols
-
-# Obfuscation related
 app.*.map.json
 
-# Android Studio will place build artifacts here
-/android/app/debug
-/android/app/profile
-/android/app/release
+# -----------------------------------------------------------------------------
+# iOS & Xcode Local / Generated Files
+# -----------------------------------------------------------------------------
+**/ios/Flutter/.last_build_id
+**/ios/Flutter/App.framework
+**/ios/Flutter/Flutter.framework
+**/ios/Flutter/Flutter.podspec
+**/ios/Flutter/Generated.xcconfig
+**/ios/Flutter/ephemeral/
+**/ios/Flutter/flutter_assets/
+**/ios/Flutter/flutter_export_environment.sh
+**/ios/Pods/
+**/ios/.symlinks/
+**/ios/profile
+**/DerivedData/
+*.mode1v3
+*.mode2v3
+*.moved-aside
+*.pbxuser
+*.perspectivev3
+*.xcuserstate
+project.xcworkspace/xcuserdata/
+xcuserdata/
+
+# -----------------------------------------------------------------------------
+# Security, Tokens & Credentials (NEVER COMMIT)
+# -----------------------------------------------------------------------------
+*.env
+*.env.*
+*.key
+*.keystore
+*.jks
+*.p8
+*.p12
+*.cer
+*.mobileprovision
+*.provisionprofile
+*.pem
+secrets/
+secret.json
+secrets.json
+auth_tokens*
+credentials.json
+google-services.json
+GoogleService-Info.plist
+
+# -----------------------------------------------------------------------------
+# Operating System Junk
+# -----------------------------------------------------------------------------
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# -----------------------------------------------------------------------------
+# IDEs, Text Editors & Local Configuration
+# -----------------------------------------------------------------------------
+# IntelliJ IDEA / Android Studio
+.idea/
+*.iml
+*.ipr
+*.iws
+
+# Visual Studio Code
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+.vscode/*.log
+
+# Miscellaneous editors
+*.swp
+*.swo
+*~
+*.bak
+*.tmp
+*.log
