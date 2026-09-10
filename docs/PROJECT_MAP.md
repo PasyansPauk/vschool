@@ -21,13 +21,22 @@
 ### Automated Build Number Increment
 - **Rule**: Every single build / release deployment MUST increment the build number in `pubspec.yaml` (`version: x.y.z+BUILD_NUMBER`).
 - Always explicitly declare and report the exact build number to the user when preparing and launching builds.
-- Current Build: **35** (`1.0.0+35`).
+- Current Build: **36** (`2.0.0+36`).
 
 
 ### Process Management & Cleanup
 - When launching `flutter run --release` on a physical device, once the app is installed and launched (`Installing and launching...` completed), do NOT leave the interactive terminal task hanging indefinitely. Close/terminate the task promptly to prevent resource leakage.
 
 ## 4. Changelog
+- **Build 36 (2026-09-11) — Major Release v2.0.0**:
+  - **Full Major Release 2.0.0 for iOS & Android**:
+    - Bumped project version to `2.0.0+36` across `pubspec.yaml` and application packages.
+    - Generated native Android launcher icons from `logo.png` across all mipmap density buckets (`mdpi`, `hdpi`, `xhdpi`, `xxhdpi`, `xxxhdpi`), replacing default Flutter bird branding.
+    - Compiled and packaged release binaries:
+      - Android Release APK: `vSchool-v2.0.0.apk` (52 MB, signed for direct sideloading).
+      - iOS Release IPA: `vSchool-v2.0.0.ipa` (8.3 MB, packaged from `Runner.app` for Scarlet / AltStore / Sideloadly / TrollStore).
+    - Published official GitHub Release `v2.0.0` at `https://github.com/PasyansPauk/vschool/releases/tag/v2.0.0` with both binary release assets attached.
+    - Rewrote `README.md` showcasing new UI screenshots (`for_readme/IMG_3814.PNG`, `for_readme/IMG_3815.PNG`, `for_readme/IMG_3816.PNG`), video demonstration (`for_readme/ScreenRecording_*.mov`), dual-platform installation guides, and upcoming roadmap (Liquid Glass everywhere and offline data storage).
 - **Build 35 (2026-09-10)**:
   - **Identical iOS HIG Experience & Animations on Android**:
     - Updated `lib/app_android.dart` (`AndroidSchoolDiaryApp`) to render the exact iOS HIG visual design, typography, docked Liquid Glass tab bar, and Cupertino theme (`AppTheme.getCupertinoTheme`).
