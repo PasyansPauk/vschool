@@ -9,6 +9,7 @@ import '../models/subject_summary.dart';
 import '../models/homework_item.dart';
 import '../models/user_profile.dart';
 import 'cache_service.dart';
+import 'dev_logger.dart';
 import 'dart:math' as math;
 
 class MesApiException implements Exception {
@@ -151,130 +152,51 @@ class MesApiService {
     final target = forDate ?? DateTime.now();
     final monday = DateTime(target.year, target.month, target.day)
         .subtract(Duration(days: target.weekday - 1));
-    final sunday = monday.add(const Duration(days: 6));
     final dateFormat = DateFormat('yyyy-MM-dd');
-    final beginStr = dateFormat.format(monday);
-    final endStr = dateFormat.format(sunday);
 
     final headers = await _getHeaders();
     final queryParam = studentId.isNotEmpty && studentId != 'mesh_user'
         ? 'student_id=$studentId&'
         : '';
 
-    final candidateUrls = [
-      Uri.parse(
-          'https://school.mos.ru/api/family/web/v1/schedule?${queryParam}begin_date=$beginStr&end_date=$endStr'),
-      Uri.parse(
-          'https://school.mos.ru/api/family/mobile/v1/schedule?${queryParam}begin_date=$beginStr&end_date=$endStr'),
-      Uri.parse(
-          '$_meshBaseUrl/schedule?${queryParam}begin_date=$beginStr&end_date=$endStr'),
-    ];
+    // Выполняем 7 запросов параллельно (по одному на каждый день недели)
+    // Так как API МЭШ /family/web/v1/schedule возвращает детальное расписание только на 1 день (date=YYYY-MM-DD).
+    final futures = List.generate(7, (i) async {
+      final dayDate = monday.add(Duration(days: i));
+      final dayStr = dateFormat.format(dayDate);
 
-    List<String> errors = [];
-    List<SchoolDaySchedule> fallbackEmptyWeek = [];
+      final candidateUrls = [
+        Uri.parse('https://school.mos.ru/api/family/web/v1/schedule?${queryParam}date=$dayStr'),
+        Uri.parse('https://school.mos.ru/api/family/mobile/v1/schedule?${queryParam}date=$dayStr'),
+      ];
 
-    for (final url in candidateUrls) {
-      try {
-        final response =
-            await http.get(url, headers: headers).timeout(const Duration(seconds: 8));
+      final dayLessons = <Lesson>[];
+      final dayBreaks = <ScheduleBreak>[];
 
-        if (response.statusCode == 200) {
-          final body = jsonDecode(response.body);
-          final List<SchoolDaySchedule> parsed = [];
+      for (final url in candidateUrls) {
+        try {
+          final response = await http.get(url, headers: headers).timeout(const Duration(seconds: 8));
+          if (response.statusCode == 200) {
+            if (i == 0 || i == 1) { // Логируем пару дней для дебага
+              DevLogger.log('schedule_raw_$dayStr', response.body);
+            }
+            final body = jsonDecode(response.body);
 
-          dynamic activities;
-          if (body is Map) {
-            activities = body['activities'] ??
-                body['payload'] ??
-                body['lessons'] ??
-                body['data'] ??
-                body['response'];
-          } else if (body is List) {
-            activities = body;
-          }
+            dynamic activities;
+            if (body is Map) {
+              activities = body['activities'] ?? body['payload'] ?? body['lessons'] ?? body['data'];
+            } else if (body is List) {
+              activities = body;
+            }
 
-          if (activities is List) {
-            // Process each day of the week (Monday to Sunday)
-            for (int i = 0; i < 7; i++) {
-              final dayDate = monday.add(Duration(days: i));
-              final dayStr = dateFormat.format(dayDate);
-              final dayLessons = <Lesson>[];
-              final dayBreaks = <ScheduleBreak>[];
-
-              final List<dynamic> daySpecificActivities = [];
-              for (final item in activities) {
-                if (item is Map) {
-                  // Check if Day container (contains a list of lessons/activities)
-                  final bool isDayContainer =
-                      (item.containsKey('lessons') && item['lessons'] is List) ||
-                      (item.containsKey('activities') && item['activities'] is List);
-
-                  if (isDayContainer) {
-                    final itemDt = _parseAnyDateTime(item['date'] ?? item['lesson_date'] ?? item['begin_date']);
-                    if (itemDt != null) {
-                      if (itemDt.year == dayDate.year && itemDt.month == dayDate.month && itemDt.day == dayDate.day) {
-                        final childList = (item['lessons'] ?? item['activities']) as List;
-                        daySpecificActivities.addAll(childList);
-                      }
-                    } else {
-                      final itemDate = (item['date'] ?? item['lesson_date'] ?? item['begin_date'] ?? '').toString();
-                      if (itemDate.startsWith(dayStr)) {
-                        final childList = (item['lessons'] ?? item['activities']) as List;
-                        daySpecificActivities.addAll(childList);
-                      }
-                    }
-                  } else {
-                    // Item is a direct lesson or schedule activity
-                    DateTime? itemDt = _parseAnyDateTime(item['begin_utc']) ??
-                        _parseAnyDateTime(item['start_at']) ??
-                        _parseAnyDateTime(item['begin_at']) ??
-                        _parseAnyDateTime(item['datetime']) ??
-                        _parseAnyDateTime(item['date']) ??
-                        _parseAnyDateTime(item['lesson_date']) ??
-                        _parseAnyDateTime(item['begin_date']);
-
-                    if (itemDt == null && item['lesson'] is Map) {
-                      final l = item['lesson'] as Map;
-                      itemDt = _parseAnyDateTime(l['begin_utc']) ??
-                          _parseAnyDateTime(l['date']) ??
-                          _parseAnyDateTime(l['lesson_date']) ??
-                          _parseAnyDateTime(l['start_at']);
-                    }
-
-                    if (itemDt != null) {
-                      if (itemDt.year == dayDate.year &&
-                          itemDt.month == dayDate.month &&
-                          itemDt.day == dayDate.day) {
-                        daySpecificActivities.add(item);
-                      }
-                    } else {
-                      final s = (item['date'] ??
-                              item['lesson_date'] ??
-                              item['begin_date'] ??
-                              item['begin_time'] ??
-                              '')
-                          .toString();
-                      if (s.isNotEmpty && s.startsWith(dayStr)) {
-                        daySpecificActivities.add(item);
-                      }
-                    }
-                  }
-                }
-              }
-
-              for (final act in daySpecificActivities) {
+            if (activities is List) {
+              for (final act in activities) {
                 if (act is Map) {
-                  final Map? nestedLesson =
-                      act['lesson'] is Map ? (act['lesson'] as Map) : null;
-
-                  // Extract Subject Name
+                  final Map? nestedLesson = act['lesson'] is Map ? (act['lesson'] as Map) : null;
                   String subject = _extractSubject(act, nestedLesson);
-
-                  // Extract Start & End Times
                   String start = _extractStartTime(act, nestedLesson);
                   String end = _extractEndTime(act, nestedLesson);
 
-                  // Check if this activity is a BREAK (Перемена)
                   if (_isBreakActivity(act, nestedLesson, subject)) {
                     final durationMins = SchoolDaySchedule.calcMins(start, end);
                     String breakName = subject.isNotEmpty && subject.toLowerCase() != 'урок'
@@ -286,96 +208,65 @@ class MesApiService {
                       endTime: end,
                       durationMinutes: durationMins,
                     ));
-                    continue; // Skip adding to lessons!
+                    continue;
                   }
 
-                  // Extract Lesson Number
                   final numVal = _extractLessonNumber(act, nestedLesson, dayLessons.length + 1);
-
-                  // Deduplicate identical lessons in same time slot
                   final isDuplicate = dayLessons.any((l) =>
                       (l.startTime == start && l.subject.toLowerCase() == subject.toLowerCase()) ||
                       (numVal > 0 && l.number == numVal && l.startTime == start));
                   if (isDuplicate) continue;
 
-                  // Extract Teacher Name
-                  String teacher = _extractTeacher(act, nestedLesson);
-
-                  // Extract Room
-                  String room = _extractRoom(act, nestedLesson);
-
-                  // Extract Topic
-                  String topic = _extractTopic(act, nestedLesson);
-
-                  // Extract Homework & Grade
-                  String? hwDesc = _extractHomework(act, nestedLesson);
-                  GradeItem? gradeItem = _extractGrade(act, nestedLesson, dayDate, subject, topic);
-
                   dayLessons.add(Lesson(
                     number: numVal > 0 ? numVal : (dayLessons.length + 1),
                     subject: subject,
-                    room: room,
-                    teacher: teacher,
+                    room: _extractRoom(act, nestedLesson),
+                    teacher: _extractTeacher(act, nestedLesson),
                     startTime: start,
                     endTime: end,
-                    topic: topic,
-                    homework: hwDesc,
-                    grade: gradeItem,
+                    topic: _extractTopic(act, nestedLesson),
+                    homework: _extractHomework(act, nestedLesson),
+                    grade: _extractGrade(act, nestedLesson, dayDate, subject, _extractTopic(act, nestedLesson)),
                   ));
                 }
               }
 
-              // Sort lessons chronologically
+              // Сортировка по времени
               dayLessons.sort((a, b) {
                 final timeCmp = a.startTime.compareTo(b.startTime);
                 if (timeCmp != 0) return timeCmp;
                 return a.number.compareTo(b.number);
               });
 
-              // Renumber lessons consecutively 1, 2, 3...
               for (int k = 0; k < dayLessons.length; k++) {
                 dayLessons[k] = dayLessons[k].copyWith(number: k + 1);
               }
-
-              // Sort breaks chronologically
               dayBreaks.sort((a, b) => a.startTime.compareTo(b.startTime));
-
-              parsed.add(SchoolDaySchedule(
-                date: dayDate,
-                dayName: _dayName(dayDate.weekday),
-                lessons: dayLessons,
-                breaks: dayBreaks,
-              ));
             }
-
-            if (parsed.any((s) => s.lessons.isNotEmpty)) {
-              if (forDate == null || _isSameWeek(target, DateTime.now())) {
-                await _cacheService.saveSchedules(parsed);
-              }
-              return parsed;
-            } else {
-              // Valid response with 0 lessons (e.g. vacation / free week)
-              if (fallbackEmptyWeek.isEmpty) fallbackEmptyWeek = parsed;
-            }
+            break; // Успешно загрузили день, выходим из candidateUrls
           }
-        } else {
-          errors.add('${url.path}: ${response.statusCode}');
-        }
-      } catch (e) {
-        errors.add('${url.path}: $e');
+        } catch (_) {}
       }
+
+      return SchoolDaySchedule(
+        date: dayDate,
+        dayName: _dayName(dayDate.weekday),
+        lessons: dayLessons,
+        breaks: dayBreaks,
+      );
+    });
+
+    final List<SchoolDaySchedule> weekSchedule = await Future.wait(futures);
+
+    // Если хотя бы в один из дней есть уроки, кешируем всю неделю
+    if (weekSchedule.any((s) => s.lessons.isNotEmpty)) {
+      await _cacheService.saveSchedules(weekSchedule);
+      return weekSchedule;
     }
 
-    // If candidate URLs responded with valid but empty schedules (e.g. holidays / weekends)
-    if (fallbackEmptyWeek.isNotEmpty) {
-      return fallbackEmptyWeek;
-    }
-
-    if (errors.isNotEmpty) {
-      throw MesApiException('Schedule fail: ${errors.join(", ")}');
-    }
-    return [];
+    return weekSchedule; // Возвращаем пустую неделю, если уроков нет
   }
+
 
   /// Fetches real subject grades from official МЭШ.
   Future<List<SubjectSummary>> fetchGrades() async {
@@ -394,14 +285,31 @@ class MesApiService {
     }
 
     final headers = await _getHeaders();
-    final queryParam = studentId.isNotEmpty && studentId != 'mesh_user'
+    final now = DateTime.now();
+    final fromDate = now.month >= 8 ? '${now.year}-09-01' : '${now.year - 1}-09-01';
+    final toDate = DateFormat('yyyy-MM-dd').format(now.add(const Duration(days: 30)));
+    final toAcademicYearEnd = now.month >= 8 ? '${now.year + 1}-06-30' : '${now.year}-06-30';
+
+    final idParam = studentId.isNotEmpty && studentId != 'mesh_user'
+        ? 'student_id=$studentId&'
+        : '';
+    final idParamOnly = studentId.isNotEmpty && studentId != 'mesh_user'
         ? '?student_id=$studentId'
         : '';
 
     final candidateUrls = [
-      Uri.parse('$_meshBaseUrl/subject_marks$queryParam'),
-      Uri.parse('https://school.mos.ru/api/family/mobile/v1/marks$queryParam'),
+      Uri.parse('$_meshBaseUrl/subject_marks?${idParam}from=$fromDate&to=$toDate'),
+      Uri.parse('$_meshBaseUrl/subject_marks?${idParam}from=$fromDate&to=$toAcademicYearEnd'),
+      Uri.parse('$_meshBaseUrl/subject_marks$idParamOnly'),
+      Uri.parse('$_meshBaseUrl/marks?${idParam}from=$fromDate&to=$toDate'),
+      Uri.parse('$_meshBaseUrl/marks?${idParam}from=$fromDate&to=$toAcademicYearEnd'),
+      Uri.parse('https://school.mos.ru/api/family/mobile/v1/marks?${idParam}from=$fromDate&to=$toDate'),
+      Uri.parse('https://school.mos.ru/api/family/mobile/v1/marks?${idParam}from=$fromDate&to=$toAcademicYearEnd'),
+      Uri.parse('https://school.mos.ru/api/family/mobile/v1/marks$idParamOnly'),
+      Uri.parse('$_meshBaseUrl/marks$idParamOnly'),
     ];
+
+    List<SubjectSummary> bestResult = [];
 
     for (final url in candidateUrls) {
       try {
@@ -410,60 +318,34 @@ class MesApiService {
 
         if (response.statusCode == 200) {
           final body = jsonDecode(response.body);
-          final List<SubjectSummary> result = [];
+          final list = _parseMarksResponse(body);
 
-          dynamic payload;
-          if (body is Map) {
-            payload = body['payload'] ?? body['data'] ?? body['items'];
-          } else if (body is List) {
-            payload = body;
+          // If we found subjects with actual grades, save and return immediately!
+          if (list.any((s) => s.grades.isNotEmpty)) {
+            _sortSubjects(list);
+            await _cacheService.saveGrades(list);
+            return list;
           }
 
-          if (payload is List) {
-            for (final item in payload) {
-              if (item is Map) {
-                final subjectName = (item['subject_name'] ?? item['subject'] ?? item['name'] ?? '').toString();
-                final teacher = (item['teacher_name'] ?? item['teacher'] ?? '').toString();
-                final marksRaw = (item['marks'] ?? item['grades'] ?? item['values']) as List<dynamic>? ?? [];
-
-                final gradeItems = <GradeItem>[];
-                for (final m in marksRaw) {
-                  if (m is Map) {
-                    final val = int.tryParse((m['value'] ?? m['mark'] ?? '').toString()) ?? 0;
-                    final weight = int.tryParse((m['weight'] ?? '1').toString()) ?? 1;
-                    final dateStr = (m['date'] ?? '').toString();
-                    final date = DateTime.tryParse(dateStr) ?? DateTime.now();
-
-                    if (val > 0) {
-                      gradeItems.add(GradeItem(
-                        id: (m['id'] ?? '').toString(),
-                        subject: subjectName,
-                        value: val,
-                        weight: weight,
-                        date: date,
-                        topic: (m['topic'] ?? '').toString(),
-                      ));
-                    }
-                  }
-                }
-
-                if (subjectName.isNotEmpty) {
-                  result.add(SubjectSummary(
-                    subject: subjectName,
-                    teacher: teacher,
-                    grades: gradeItems,
-                  ));
-                }
-              }
-            }
-
-            if (result.isNotEmpty) {
-              await _cacheService.saveGrades(result);
-              return result;
-            }
+          if (list.isNotEmpty && bestResult.isEmpty) {
+            bestResult = list;
           }
         }
       } catch (_) {}
+    }
+
+    // Fallback: merge any grades already loaded in schedule lessons
+    final fallbackWithSchedules = await _mergeGradesFromSchedules(bestResult);
+    if (fallbackWithSchedules.any((s) => s.grades.isNotEmpty)) {
+      _sortSubjects(fallbackWithSchedules);
+      await _cacheService.saveGrades(fallbackWithSchedules);
+      return fallbackWithSchedules;
+    }
+
+    if (bestResult.isNotEmpty) {
+      _sortSubjects(bestResult);
+      await _cacheService.saveGrades(bestResult);
+      return bestResult;
     }
 
     return [];
@@ -477,96 +359,50 @@ class MesApiService {
       return [];
     }
 
-    String studentId = await _cacheService.getStudentId() ?? '';
-    if (studentId.isEmpty || studentId == 'mesh_user') {
-      final profile = await fetchUserProfile();
-      if (profile != null && profile.id.isNotEmpty && profile.id != 'mesh_user') {
-        studentId = profile.id;
+    // Поскольку эндпоинт /homeworks для многих пользователей возвращает пустой payload,
+    // а расписание стабильно отдает поле homework внутри урока,
+    // мы извлекаем домашнее задание прямо из расписания на предыдущую, текущую и следующую неделю.
+    final now = DateTime.now();
+    final previousWeek = await fetchSchedules(forDate: now.subtract(const Duration(days: 7)));
+    final currentWeek = await fetchSchedules(forDate: now);
+    final nextWeek = await fetchSchedules(forDate: now.add(const Duration(days: 7)));
+
+    final allDays = [...previousWeek, ...currentWeek, ...nextWeek];
+    final List<HomeworkItem> result = [];
+
+    for (final day in allDays) {
+      for (final lesson in day.lessons) {
+        final hwText = lesson.homework?.trim() ?? '';
+        if (hwText.isNotEmpty && hwText != 'Материал выдан в классе. Домашнее задание выдано в классе') {
+          // Stable ID based on subject, date, and lesson number to prevent mass-toggling bugs
+          final uniqueId = 'hw_${lesson.subject.hashCode}_${day.date.millisecondsSinceEpoch}_${lesson.number}';
+
+          result.add(HomeworkItem(
+            id: uniqueId,
+            subject: lesson.subject,
+            description: hwText,
+            dueDate: day.date,
+            isCompleted: false, // Will be merged with cache below
+            attachmentsCount: 0,
+            attachments: [],
+          ));
+        }
       }
     }
 
-    final headers = await _getHeaders();
-    final queryParam = studentId.isNotEmpty && studentId != 'mesh_user'
-        ? '?student_id=$studentId'
-        : '';
-
-    final candidateUrls = [
-      Uri.parse('$_meshBaseUrl/homeworks$queryParam'),
-      Uri.parse('https://school.mos.ru/api/family/mobile/v1/homeworks$queryParam'),
-    ];
-
-    for (final url in candidateUrls) {
-      try {
-        final response =
-            await http.get(url, headers: headers).timeout(const Duration(seconds: 8));
-
-        if (response.statusCode == 200) {
-          final body = jsonDecode(response.body);
-          final List<HomeworkItem> result = [];
-
-          dynamic payload;
-          if (body is Map) {
-            payload = body['payload'] ?? body['data'] ?? body['items'];
-          } else if (body is List) {
-            payload = body;
-          }
-
-          if (payload is List) {
-            int hwIdx = 0;
-            for (final hw in payload) {
-              if (hw is Map) {
-                hwIdx++;
-                final dateStr = (hw['date'] ?? hw['deadline'] ?? '').toString();
-                final date = DateTime.tryParse(dateStr) ?? DateTime.now();
-
-                // Build unique reliable ID
-                final rawId = (hw['id'] ?? '').toString().trim();
-                final subjectName = (hw['subject_name'] ?? hw['subject'] ?? 'Предмет').toString();
-                final uniqueId = rawId.isNotEmpty
-                    ? '${rawId}_$hwIdx'
-                    : 'hw_${subjectName.hashCode}_${date.millisecondsSinceEpoch}_$hwIdx';
-
-                // Extract attachments / materials
-                final List<HomeworkAttachment> attachments = [];
-                final rawMats = (hw['materials'] ?? hw['attachments'] ?? hw['files'] ?? []) as List<dynamic>? ?? [];
-                for (final m in rawMats) {
-                  if (m is Map) {
-                    final aTitle = (m['title'] ?? m['name'] ?? m['file_name'] ?? 'Прикрепленный файл').toString();
-                    final aUrl = (m['url'] ?? m['file_url'] ?? m['link'] ?? m['download_url'] ?? '').toString();
-                    final aType = (m['type'] ?? 'file').toString();
-                    if (aUrl.isNotEmpty) {
-                      attachments.add(HomeworkAttachment(
-                        id: (m['id'] ?? '').toString(),
-                        title: aTitle,
-                        url: aUrl,
-                        type: aType,
-                      ));
-                    }
-                  }
-                }
-
-                result.add(HomeworkItem(
-                  id: uniqueId,
-                  subject: subjectName,
-                  description: (hw['description'] ?? hw['task'] ?? '').toString(),
-                  dueDate: date,
-                  isCompleted: hw['is_done'] == true || hw['is_completed'] == true,
-                  attachmentsCount: attachments.isNotEmpty ? attachments.length : rawMats.length,
-                  attachments: attachments,
-                ));
-              }
-            }
-
-            if (result.isNotEmpty) {
-              await _cacheService.saveHomeworks(result);
-              return result;
-            }
-          }
-        }
-      } catch (_) {}
+    // Merge with cached homework to preserve isCompleted status
+    final cached = await _cacheService.getHomeworks() ?? [];
+    for (int i = 0; i < result.length; i++) {
+      final existing = cached.where((c) => c.id == result[i].id).firstOrNull;
+      if (existing != null) {
+        result[i] = result[i].copyWith(isCompleted: existing.isCompleted);
+      }
     }
 
-    return [];
+    if (result.isNotEmpty) {
+      await _cacheService.saveHomeworks(result);
+    }
+    return result;
   }
 
   String _dayName(int weekday) {
@@ -849,55 +685,310 @@ class MesApiService {
     return null;
   }
 
-  GradeItem? _extractGrade(Map act, Map? nestedLesson, DateTime dayDate, String subject, String topic) {
-    dynamic marks = nestedLesson?['marks'] ??
+  int _parseSingleGrade(dynamic raw) {
+    if (raw == null) return 0;
+    if (raw is int) return raw;
+    if (raw is num) return raw.round();
+    final str = raw.toString().trim();
+    if (str.isEmpty || str == 'null') return 0;
+
+    // e.g. "5/4" or "5/5" -> take the first mark
+    if (str.contains('/')) {
+      final first = int.tryParse(str.split('/')[0].trim());
+      if (first != null && first > 0) return first;
+    }
+
+    // e.g. "5.0" or "5,0"
+    final cleanStr = str.replaceAll(',', '.');
+    final doubleVal = double.tryParse(cleanStr);
+    if (doubleVal != null && doubleVal > 0) return doubleVal.round();
+
+    final intVal = int.tryParse(str);
+    if (intVal != null && intVal > 0) return intVal;
+
+    // Fallback: extract single digit 1..5
+    final match = RegExp(r'[1-5]').firstMatch(str);
+    if (match != null) {
+      return int.tryParse(match.group(0)!) ?? 0;
+    }
+
+    return 0;
+  }
+
+  int _parseWeight(dynamic raw) {
+    if (raw == null) return 1;
+    if (raw is int && raw > 0) return raw;
+    if (raw is num && raw > 0) return raw.round();
+    final parsed = int.tryParse(raw.toString().trim());
+    if (parsed != null && parsed > 0) return parsed;
+    return 1;
+  }
+
+  GradeItem? _extractSingleGradeItem(
+    dynamic m,
+    String subjectName, [
+    DateTime? defaultDate,
+    String defaultTopic = '',
+  ]) {
+    if (m == null) return null;
+    if (m is Map) {
+      dynamic rawVal = m['value'] ??
+          m['mark'] ??
+          m['grade'] ??
+          m['score'] ??
+          m['val'] ??
+          m['name'];
+      if (rawVal == null && m['values'] is List && (m['values'] as List).isNotEmpty) {
+        final firstV = (m['values'] as List).first;
+        rawVal = firstV is Map ? (firstV['value'] ?? firstV['mark']) : firstV;
+      }
+      final val = _parseSingleGrade(rawVal);
+      if (val <= 0) return null;
+
+      final weight = _parseWeight(
+        m['weight'] ?? m['weight_value'] ?? m['criterion_weight'] ?? m['grade_weight'],
+      );
+      final dateStr = (m['date'] ?? m['date_time'] ?? m['created_at'] ?? '').toString();
+      final date = DateTime.tryParse(dateStr) ?? defaultDate ?? DateTime.now();
+      final id = (m['id'] ?? '').toString();
+      final topic = (m['topic'] ?? m['lesson_theme'] ?? m['comment'] ?? defaultTopic).toString().trim();
+      final comment = (m['comment'] ?? m['criterion_name'] ?? '').toString().trim();
+
+      return GradeItem(
+        id: id,
+        subject: subjectName,
+        value: val,
+        weight: weight,
+        date: date,
+        topic: topic,
+        comment: comment.isNotEmpty ? comment : null,
+      );
+    } else {
+      final val = _parseSingleGrade(m);
+      if (val > 0) {
+        return GradeItem(
+          id: '',
+          subject: subjectName,
+          value: val,
+          weight: 1,
+          date: defaultDate ?? DateTime.now(),
+          topic: defaultTopic,
+        );
+      }
+    }
+    return null;
+  }
+
+  List<GradeItem> _extractGrades(
+    Map act,
+    Map? nestedLesson,
+    DateTime dayDate,
+    String subject,
+    String topic,
+  ) {
+    final List<GradeItem> results = [];
+
+    dynamic marksSource = nestedLesson?['marks'] ??
         act['marks'] ??
+        nestedLesson?['estimates'] ??
+        act['estimates'] ??
+        nestedLesson?['estimation'] ??
+        act['estimation'] ??
+        nestedLesson?['evaluations'] ??
+        act['evaluations'] ??
+        nestedLesson?['lesson_marks'] ??
+        act['lesson_marks'] ??
+        nestedLesson?['activity_marks'] ??
+        act['activity_marks'] ??
+        nestedLesson?['assessments'] ??
+        act['assessments'] ??
+        nestedLesson?['assessment'] ??
+        act['assessment'] ??
+        nestedLesson?['grades'] ??
+        act['grades'] ??
         nestedLesson?['grade'] ??
         act['grade'] ??
         nestedLesson?['mark'] ??
         act['mark'];
 
-    if (marks is List && marks.isNotEmpty) {
-      for (final m in marks) {
-        if (m is Map) {
-          final val = int.tryParse((m['value'] ?? m['mark'] ?? '').toString()) ?? 0;
-          final weight = int.tryParse((m['weight'] ?? '1').toString()) ?? 1;
-          if (val > 0) {
-            return GradeItem(
-              id: (m['id'] ?? '').toString(),
-              subject: subject,
-              value: val,
-              weight: weight,
-              date: dayDate,
-              topic: topic,
+    if (marksSource == null) return results;
+
+    final list = marksSource is List ? marksSource : [marksSource];
+
+    for (final item in list) {
+      final g = _extractSingleGradeItem(item, subject, dayDate, topic);
+      if (g != null) {
+        results.add(g);
+      }
+    }
+
+    return results;
+  }
+
+  GradeItem? _extractGrade(
+    Map act,
+    Map? nestedLesson,
+    DateTime dayDate,
+    String subject,
+    String topic,
+  ) {
+    final list = _extractGrades(act, nestedLesson, dayDate, subject, topic);
+    return list.isNotEmpty ? list.first : null;
+  }
+
+  List<SubjectSummary> _parseMarksResponse(dynamic body) {
+    if (body == null) return [];
+    dynamic payload;
+    if (body is Map) {
+      payload = body['payload'] ?? body['data'] ?? body['items'] ?? body['marks'] ?? body['subjects'];
+    } else if (body is List) {
+      payload = body;
+    }
+
+    if (payload is! List || payload.isEmpty) return [];
+
+    final first = payload.first;
+    final isFlatMarkList = first is Map &&
+        (first['value'] != null || first['mark'] != null || first['score'] != null) &&
+        (first['subject_name'] != null || first['subject'] != null);
+
+    if (isFlatMarkList) {
+      final Map<String, List<GradeItem>> subjectGradesMap = {};
+      final Map<String, String> subjectTeachersMap = {};
+
+      for (final item in payload) {
+        if (item is Map) {
+          final subjectName = (item['subject_name'] ?? item['subject'] ?? item['name'] ?? '').toString().trim();
+          if (subjectName.isEmpty) continue;
+
+          final g = _extractSingleGradeItem(item, subjectName);
+          if (g != null) {
+            subjectGradesMap.putIfAbsent(subjectName, () => []).add(g);
+            if (item['teacher_name'] != null || item['teacher'] != null) {
+              subjectTeachersMap[subjectName] = (item['teacher_name'] ?? item['teacher']).toString().trim();
+            }
+          }
+        }
+      }
+
+      final List<SubjectSummary> summaries = [];
+      for (final entry in subjectGradesMap.entries) {
+        summaries.add(SubjectSummary(
+          subject: entry.key,
+          teacher: subjectTeachersMap[entry.key] ?? '',
+          grades: entry.value,
+        ));
+      }
+      return summaries;
+    }
+
+    // List of subjects with nested marks
+    final List<SubjectSummary> result = [];
+    for (final item in payload) {
+      if (item is Map) {
+        final subjectName = (item['subject_name'] ?? item['subject'] ?? item['name'] ?? '').toString().trim();
+        if (subjectName.isEmpty) continue;
+        final teacher = (item['teacher_name'] ?? item['teacher'] ?? '').toString().trim();
+
+        final List<GradeItem> gradeItems = [];
+
+        // 1. Direct marks array
+        dynamic directMarks = item['marks'] ?? item['grades'] ?? item['values'];
+        if (directMarks is List) {
+          for (final m in directMarks) {
+            final g = _extractSingleGradeItem(m, subjectName);
+            if (g != null) gradeItems.add(g);
+          }
+        }
+
+        // 2. Nested in periods / period_marks / quarters
+        dynamic periods = item['periods'] ?? item['period_marks'] ?? item['quarters'] ?? item['terms'];
+        if (periods is List) {
+          for (final p in periods) {
+            if (p is Map) {
+              dynamic pMarks = p['marks'] ?? p['grades'] ?? p['values'];
+              if (pMarks is List) {
+                for (final m in pMarks) {
+                  final g = _extractSingleGradeItem(m, subjectName);
+                  if (g != null) gradeItems.add(g);
+                }
+              }
+            }
+          }
+        }
+
+        // 3. Year / final marks
+        dynamic yearMarks = item['year_marks'] ?? item['final_marks'];
+        if (yearMarks is List) {
+          for (final m in yearMarks) {
+            final g = _extractSingleGradeItem(m, subjectName);
+            if (g != null) gradeItems.add(g);
+          }
+        }
+
+        result.add(SubjectSummary(
+          subject: subjectName,
+          teacher: teacher,
+          grades: gradeItems,
+        ));
+      }
+    }
+
+    return result;
+  }
+
+  Future<List<SubjectSummary>> _mergeGradesFromSchedules(List<SubjectSummary> base) async {
+    final schedules = await _cacheService.getSchedules();
+    if (schedules == null || schedules.isEmpty) return base;
+
+    final map = <String, SubjectSummary>{};
+    for (final s in base) {
+      map[s.subject.trim().toLowerCase()] = s;
+    }
+
+    for (final day in schedules) {
+      for (final lesson in day.lessons) {
+        final g = lesson.grade;
+        if (g != null && g.value > 0) {
+          final subjKey = lesson.subject.trim().toLowerCase();
+          if (subjKey.isEmpty) continue;
+
+          final existing = map[subjKey];
+          if (existing != null) {
+            final alreadyHas = existing.grades.any((item) =>
+                (item.id.isNotEmpty && item.id == g.id) ||
+                (item.value == g.value &&
+                    item.date.year == g.date.year &&
+                    item.date.month == g.date.month &&
+                    item.date.day == g.date.day));
+            if (!alreadyHas) {
+              map[subjKey] = existing.copyWith(
+                grades: List<GradeItem>.from(existing.grades)..add(g),
+              );
+            }
+          } else {
+            map[subjKey] = SubjectSummary(
+              subject: lesson.subject.trim(),
+              teacher: lesson.teacher,
+              grades: [g],
             );
           }
         }
       }
-    } else if (marks is Map) {
-      final val = int.tryParse((marks['value'] ?? marks['mark'] ?? '').toString()) ?? 0;
-      final weight = int.tryParse((marks['weight'] ?? '1').toString()) ?? 1;
-      if (val > 0) {
-        return GradeItem(
-          id: (marks['id'] ?? '').toString(),
-          subject: subject,
-          value: val,
-          weight: weight,
-          date: dayDate,
-          topic: topic,
-        );
-      }
-    } else if (marks is int && marks > 0) {
-      return GradeItem(
-        id: '',
-        subject: subject,
-        value: marks,
-        weight: 1,
-        date: dayDate,
-        topic: topic,
-      );
     }
-    return null;
+
+    return map.values.toList();
+  }
+
+  void _sortSubjects(List<SubjectSummary> list) {
+    list.sort((a, b) {
+      if (a.grades.isNotEmpty && b.grades.isEmpty) return -1;
+      if (a.grades.isEmpty && b.grades.isNotEmpty) return 1;
+      if (a.grades.length != b.grades.length) {
+        return b.grades.length.compareTo(a.grades.length);
+      }
+      return a.subject.compareTo(b.subject);
+    });
   }
 
   bool _isBreakActivity(Map act, Map? nestedLesson, String subject) {
@@ -941,11 +1032,5 @@ class MesApiService {
     }
 
     return false;
-  }
-
-  bool _isSameWeek(DateTime a, DateTime b) {
-    final monA = DateTime(a.year, a.month, a.day).subtract(Duration(days: a.weekday - 1));
-    final monB = DateTime(b.year, b.month, b.day).subtract(Duration(days: b.weekday - 1));
-    return monA.year == monB.year && monA.month == monB.month && monA.day == monB.day;
   }
 }

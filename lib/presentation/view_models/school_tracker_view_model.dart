@@ -20,35 +20,73 @@ class SchoolTrackerViewModel extends ChangeNotifier {
     });
   }
 
-  DateTime _parseTime(String timeStr) {
+  DateTime _parseTime(String timeStr, [DateTime? date]) {
+    final targetDate = date ?? _now;
     final parts = timeStr.split(':');
     final hour = int.tryParse(parts[0]) ?? 8;
     final minute = int.tryParse(parts[1]) ?? 30;
-    return DateTime(_now.year, _now.month, _now.day, hour, minute, 0);
+    return DateTime(targetDate.year, targetDate.month, targetDate.day, hour, minute, 0);
+  }
+
+  bool isToday(SchoolDaySchedule? schedule) {
+    if (schedule == null) return false;
+    return schedule.date.year == _now.year &&
+        schedule.date.month == _now.month &&
+        schedule.date.day == _now.day;
   }
 
   Duration getTimeSpent(SchoolDaySchedule? schedule) {
     if (schedule == null || schedule.lessons.isEmpty) return Duration.zero;
-    final start = _parseTime(schedule.lessons.first.startTime);
+    final scheduleDate = DateTime(schedule.date.year, schedule.date.month, schedule.date.day);
+    final today = DateTime(_now.year, _now.month, _now.day);
+
+    if (scheduleDate.isBefore(today)) {
+      final start = _parseTime(schedule.lessons.first.startTime, schedule.date);
+      final end = _parseTime(schedule.lessons.last.endTime, schedule.date);
+      return end.difference(start);
+    }
+    if (scheduleDate.isAfter(today)) {
+      return Duration.zero;
+    }
+
+    final start = _parseTime(schedule.lessons.first.startTime, schedule.date);
     if (_now.isBefore(start)) return Duration.zero;
-    final end = _parseTime(schedule.lessons.last.endTime);
+    final end = _parseTime(schedule.lessons.last.endTime, schedule.date);
     if (_now.isAfter(end)) return end.difference(start);
     return _now.difference(start);
   }
 
   Duration getTimeRemaining(SchoolDaySchedule? schedule) {
     if (schedule == null || schedule.lessons.isEmpty) return Duration.zero;
-    final end = _parseTime(schedule.lessons.last.endTime);
+    final scheduleDate = DateTime(schedule.date.year, schedule.date.month, schedule.date.day);
+    final today = DateTime(_now.year, _now.month, _now.day);
+
+    if (scheduleDate.isBefore(today)) {
+      return Duration.zero;
+    }
+    if (scheduleDate.isAfter(today)) {
+      final start = _parseTime(schedule.lessons.first.startTime, schedule.date);
+      final end = _parseTime(schedule.lessons.last.endTime, schedule.date);
+      return end.difference(start);
+    }
+
+    final end = _parseTime(schedule.lessons.last.endTime, schedule.date);
     if (_now.isAfter(end)) return Duration.zero;
-    final start = _parseTime(schedule.lessons.first.startTime);
+    final start = _parseTime(schedule.lessons.first.startTime, schedule.date);
     if (_now.isBefore(start)) return end.difference(start);
     return end.difference(_now);
   }
 
   double getDayProgress(SchoolDaySchedule? schedule) {
     if (schedule == null || schedule.lessons.isEmpty) return 0.0;
-    final start = _parseTime(schedule.lessons.first.startTime);
-    final end = _parseTime(schedule.lessons.last.endTime);
+    final scheduleDate = DateTime(schedule.date.year, schedule.date.month, schedule.date.day);
+    final today = DateTime(_now.year, _now.month, _now.day);
+
+    if (scheduleDate.isBefore(today)) return 1.0;
+    if (scheduleDate.isAfter(today)) return 0.0;
+
+    final start = _parseTime(schedule.lessons.first.startTime, schedule.date);
+    final end = _parseTime(schedule.lessons.last.endTime, schedule.date);
     final totalSec = end.difference(start).inSeconds;
     if (totalSec <= 0) return 0.0;
 
@@ -60,10 +98,10 @@ class SchoolTrackerViewModel extends ChangeNotifier {
   }
 
   Lesson? getCurrentLesson(SchoolDaySchedule? schedule) {
-    if (schedule == null) return null;
+    if (schedule == null || !isToday(schedule)) return null;
     for (final lesson in schedule.lessons) {
-      final start = _parseTime(lesson.startTime);
-      final end = _parseTime(lesson.endTime);
+      final start = _parseTime(lesson.startTime, schedule.date);
+      final end = _parseTime(lesson.endTime, schedule.date);
       if (_now.isAfter(start) && _now.isBefore(end)) {
         return lesson;
       }
@@ -72,9 +110,9 @@ class SchoolTrackerViewModel extends ChangeNotifier {
   }
 
   Lesson? getNextLesson(SchoolDaySchedule? schedule) {
-    if (schedule == null) return null;
+    if (schedule == null || !isToday(schedule)) return null;
     for (final lesson in schedule.lessons) {
-      final start = _parseTime(lesson.startTime);
+      final start = _parseTime(lesson.startTime, schedule.date);
       if (_now.isBefore(start)) {
         return lesson;
       }
@@ -83,24 +121,24 @@ class SchoolTrackerViewModel extends ChangeNotifier {
   }
 
   bool isDuringBreak(SchoolDaySchedule? schedule) {
-    if (schedule == null || schedule.lessons.length < 2) return false;
-    final firstStart = _parseTime(schedule.lessons.first.startTime);
-    final lastEnd = _parseTime(schedule.lessons.last.endTime);
+    if (schedule == null || !isToday(schedule) || schedule.lessons.length < 2) return false;
+    final firstStart = _parseTime(schedule.lessons.first.startTime, schedule.date);
+    final lastEnd = _parseTime(schedule.lessons.last.endTime, schedule.date);
     if (_now.isBefore(firstStart) || _now.isAfter(lastEnd)) return false;
 
     return getCurrentLesson(schedule) == null;
   }
 
   Duration getNextBellCountdown(SchoolDaySchedule? schedule) {
-    if (schedule == null || schedule.lessons.isEmpty) return Duration.zero;
+    if (schedule == null || !isToday(schedule) || schedule.lessons.isEmpty) return Duration.zero;
     final current = getCurrentLesson(schedule);
     if (current != null) {
-      final end = _parseTime(current.endTime);
+      final end = _parseTime(current.endTime, schedule.date);
       return end.isAfter(_now) ? end.difference(_now) : Duration.zero;
     }
     final next = getNextLesson(schedule);
     if (next != null) {
-      final start = _parseTime(next.startTime);
+      final start = _parseTime(next.startTime, schedule.date);
       return start.isAfter(_now) ? start.difference(_now) : Duration.zero;
     }
     return Duration.zero;

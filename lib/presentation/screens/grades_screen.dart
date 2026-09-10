@@ -3,6 +3,9 @@ import 'package:flutter/services.dart';
 import '../../core/theme/app_theme.dart';
 import '../../data/models/subject_summary.dart';
 import '../view_models/diary_view_model.dart';
+import '../widgets/grade_badge.dart';
+import '../widgets/promotion_bouncing_card.dart';
+import '../widgets/promotion_morph_route.dart';
 
 class GradesScreen extends StatelessWidget {
   final DiaryViewModel viewModel;
@@ -14,155 +17,183 @@ class GradesScreen extends StatelessWidget {
     required this.isDark,
   });
 
-  void _showSubjectDetails(BuildContext context, SubjectSummary subject) {
-    showCupertinoModalPopup(
+  void _showSubjectDetails(BuildContext context, SubjectSummary subject, [Rect? sourceRect]) {
+    final rect = sourceRect ?? () {
+      final rb = context.findRenderObject() as RenderBox?;
+      if (rb != null && rb.hasSize) {
+        final origin = rb.localToGlobal(Offset.zero);
+        return Rect.fromLTWH(origin.dx, origin.dy, rb.size.width, rb.size.height);
+      }
+      final size = MediaQuery.of(context).size;
+      return Rect.fromLTWH(16, size.height / 2 - 80, size.width - 32, 160);
+    }();
+
+    showProMotionCardModal(
       context: context,
-      builder: (ctx) => Container(
-        padding: const EdgeInsets.fromLTRB(20, 16, 20, 32),
-        decoration: BoxDecoration(
-          color: isDark ? AppTheme.darkSurface : AppTheme.lightSurface,
-          borderRadius: const BorderRadius.vertical(top: Radius.circular(28)),
-        ),
-        child: SafeArea(
-          top: false,
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              // Grab handle
-              Center(
-                child: Container(
-                  width: 36,
-                  height: 4,
+      sourceRect: rect,
+      sourceRadius: 20.0,
+      targetRadius: 26.0,
+      isDark: isDark,
+      collapsedChild: _buildSubjectCard(context, subject),
+      builder: (ctx, scrollController) => Padding(
+        padding: const EdgeInsets.fromLTRB(18, 16, 18, 16),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            // Subject Title & Average & Circular Close Button
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.center,
+              children: [
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text(
+                        subject.subject,
+                        style: TextStyle(
+                          fontSize: 18,
+                          fontWeight: FontWeight.bold,
+                          letterSpacing: -0.3,
+                          color: isDark
+                              ? AppTheme.darkTextPrimary
+                              : AppTheme.lightTextPrimary,
+                        ),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                      if (subject.teacher.isNotEmpty) ...[
+                        const SizedBox(height: 2),
+                        Text(
+                          subject.teacher,
+                          style: TextStyle(
+                            fontSize: 12,
+                            color: isDark
+                                ? AppTheme.darkTextSecondary
+                                : AppTheme.lightTextSecondary,
+                          ),
+                        ),
+                      ],
+                    ],
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Container(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
                   decoration: BoxDecoration(
                     color: isDark
-                        ? const Color(0xFF3F3F46)
-                        : const Color(0xFFD4D4D8),
-                    borderRadius: BorderRadius.circular(2),
+                        ? AppTheme.darkSurfaceSecondary
+                        : AppTheme.lightSurfaceSecondary,
+                    borderRadius: BorderRadius.circular(10),
                   ),
-                ),
-              ),
-              const SizedBox(height: 18),
-              Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  Expanded(
-                    child: Text(
-                      subject.subject,
-                      style: TextStyle(
-                        fontSize: 18,
-                        fontWeight: FontWeight.bold,
-                        color: isDark
-                            ? AppTheme.darkTextPrimary
-                            : AppTheme.lightTextPrimary,
-                      ),
-                    ),
-                  ),
-                  Container(
-                    padding:
-                        const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                    decoration: BoxDecoration(
+                  child: Text(
+                    'Ср: ${subject.formattedAverage}',
+                    style: TextStyle(
+                      fontSize: 13,
+                      fontWeight: FontWeight.bold,
                       color: isDark
-                          ? AppTheme.darkSurfaceSecondary
-                          : AppTheme.lightSurfaceSecondary,
-                      borderRadius: BorderRadius.circular(12),
-                    ),
-                    child: Text(
-                      'Ср: ${subject.formattedAverage}',
-                      style: TextStyle(
-                        fontSize: 14,
-                        fontWeight: FontWeight.bold,
-                        color: isDark
-                            ? AppTheme.darkTextPrimary
-                            : AppTheme.lightTextPrimary,
-                      ),
+                          ? AppTheme.darkTextPrimary
+                          : AppTheme.lightTextPrimary,
                     ),
                   ),
-                ],
-              ),
-              const SizedBox(height: 6),
-              Text(
-                subject.teacher,
-                style: TextStyle(
-                  fontSize: 13,
-                  color: isDark
-                      ? AppTheme.darkTextSecondary
-                      : AppTheme.lightTextSecondary,
                 ),
-              ),
-              const SizedBox(height: 16),
-              const Text(
-                'История оценок за четверть:',
-                style: TextStyle(
-                  fontSize: 13,
-                  fontWeight: FontWeight.w600,
-                  color: CupertinoColors.systemGrey,
+                const SizedBox(width: 8),
+                // Sleek iOS Circular Close Button
+                CupertinoButton(
+                  padding: EdgeInsets.zero,
+                  minimumSize: Size.zero,
+                  onPressed: () {
+                    HapticFeedback.lightImpact();
+                    Navigator.of(ctx).pop();
+                  },
+                  child: Container(
+                    width: 28,
+                    height: 28,
+                    decoration: BoxDecoration(
+                      color: isDark ? const Color(0x28FFFFFF) : const Color(0x14000000),
+                      shape: BoxShape.circle,
+                    ),
+                    alignment: Alignment.center,
+                    child: Icon(
+                      CupertinoIcons.xmark,
+                      size: 13,
+                      color: isDark ? const Color(0xCCFFFFFF) : const Color(0x88000000),
+                    ),
+                  ),
                 ),
+              ],
+            ),
+            const SizedBox(height: 12),
+
+            const Text(
+              'История оценок за четверть:',
+              style: TextStyle(
+                fontSize: 11.5,
+                fontWeight: FontWeight.w600,
+                color: CupertinoColors.systemGrey,
               ),
-              const SizedBox(height: 10),
+            ),
+            const SizedBox(height: 6),
+
+            if (subject.grades.isNotEmpty)
               ConstrainedBox(
-                constraints: const BoxConstraints(maxHeight: 260),
+                constraints: const BoxConstraints(maxHeight: 240),
                 child: ListView.separated(
                   shrinkWrap: true,
+                  physics: const BouncingScrollPhysics(),
+                  padding: EdgeInsets.zero,
                   itemCount: subject.grades.length,
-                  separatorBuilder: (context, index) => const SizedBox(height: 8),
+                  separatorBuilder: (context, index) => const SizedBox(height: 6),
                   itemBuilder: (context, i) {
                     final g = subject.grades[i];
                     return Container(
-                      padding: const EdgeInsets.all(12),
+                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
                       decoration: BoxDecoration(
                         color: isDark
-                            ? AppTheme.darkSurfaceSecondary
-                            : AppTheme.lightSurfaceSecondary,
-                        borderRadius: BorderRadius.circular(14),
+                            ? const Color(0x18FFFFFF)
+                            : const Color(0x0C000000),
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(
+                          color: isDark
+                              ? const Color(0x1AFFFFFF)
+                              : const Color(0x0E000000),
+                          width: 0.6,
+                        ),
                       ),
                       child: Row(
                         children: [
-                          Container(
-                            width: 38,
-                            height: 38,
-                            decoration: BoxDecoration(
-                              color: AppTheme.getGradeColor(g.value)
-                                  .withValues(alpha: 0.15),
-                              borderRadius: BorderRadius.circular(10),
-                              border: Border.all(
-                                color: AppTheme.getGradeColor(g.value),
-                              ),
-                            ),
-                            child: Center(
-                              child: Text(
-                                '${g.value}${g.weightSuperscript}',
-                                style: TextStyle(
-                                  fontSize: 16,
-                                  fontWeight: FontWeight.bold,
-                                  color: AppTheme.getGradeColor(g.value),
-                                ),
-                              ),
-                            ),
+                          GradeBadge.fromGradeItem(
+                            g,
+                            size: 32,
+                            fontSize: 16,
+                            borderRadius: 10,
+                            isDark: isDark,
                           ),
-                          const SizedBox(width: 12),
+                          const SizedBox(width: 10),
                           Expanded(
                             child: Column(
                               crossAxisAlignment: CrossAxisAlignment.start,
+                              mainAxisSize: MainAxisSize.min,
                               children: [
                                 Text(
                                   g.topic,
                                   style: TextStyle(
-                                    fontSize: 13,
+                                    fontSize: 12.5,
                                     fontWeight: FontWeight.w600,
                                     color: isDark
                                         ? AppTheme.darkTextPrimary
                                         : AppTheme.lightTextPrimary,
                                   ),
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
                                 ),
-                                const SizedBox(height: 2),
                                 Text(
-                                  'Вес работы: ${g.weight}',
-                                  style: TextStyle(
+                                  '${g.formattedDate}${g.comment != null && g.comment!.isNotEmpty ? ' • ${g.comment}' : ''}',
+                                  style: const TextStyle(
                                     fontSize: 11,
-                                    color: isDark
-                                        ? AppTheme.darkTextSecondary
-                                        : AppTheme.lightTextSecondary,
+                                    color: CupertinoColors.systemGrey,
                                   ),
                                 ),
                               ],
@@ -173,28 +204,99 @@ class GradesScreen extends StatelessWidget {
                     );
                   },
                 ),
-              ),
-              const SizedBox(height: 16),
-              SizedBox(
-                width: double.infinity,
-                child: CupertinoButton(
-                  color: isDark ? CupertinoColors.white : CupertinoColors.black,
-                  borderRadius: BorderRadius.circular(14),
-                  onPressed: () => Navigator.of(ctx).pop(),
-                  child: Text(
-                    'Закрыть',
-                    style: TextStyle(
-                      color: isDark
-                          ? CupertinoColors.black
-                          : CupertinoColors.white,
-                      fontWeight: FontWeight.w600,
-                    ),
+              )
+            else
+              Padding(
+                padding: const EdgeInsets.symmetric(vertical: 8),
+                child: Text(
+                  'Нет оценок',
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: isDark ? AppTheme.darkTextSecondary : AppTheme.lightTextSecondary,
                   ),
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildSubjectCard(BuildContext context, SubjectSummary subject) {
+    final textPrimary =
+        isDark ? AppTheme.darkTextPrimary : AppTheme.lightTextPrimary;
+    final textSecondary =
+        isDark ? AppTheme.darkTextSecondary : AppTheme.lightTextSecondary;
+    final cardBg = isDark ? AppTheme.darkSurface : AppTheme.lightSurface;
+    final border = isDark ? AppTheme.darkBorder : AppTheme.lightBorder;
+
+    return Container(
+      margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: cardBg,
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: border),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Expanded(
+                child: Text(
+                  subject.subject,
+                  style: TextStyle(
+                    fontSize: 16,
+                    fontWeight: FontWeight.bold,
+                    color: textPrimary,
+                  ),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+              const SizedBox(width: 8),
+              Text(
+                subject.formattedAverage,
+                style: TextStyle(
+                  fontSize: 18,
+                  fontWeight: FontWeight.bold,
+                  color: AppTheme.getGradeColor(
+                      subject.averageScore.round()),
                 ),
               ),
             ],
           ),
-        ),
+          if (subject.teacher.isNotEmpty) ...[
+            const SizedBox(height: 2),
+            Text(
+              subject.teacher,
+              style: TextStyle(
+                fontSize: 12,
+                color: textSecondary,
+              ),
+            ),
+          ],
+          const SizedBox(height: 12),
+          // Horizontal Grade Badges with Weights
+          if (subject.grades.isNotEmpty)
+            GradeBadgeRow(
+              grades: subject.grades,
+              size: 30,
+              fontSize: 15,
+              borderRadius: 9,
+              isDark: isDark,
+            )
+          else
+            Text(
+              'Нет текущих оценок',
+              style: TextStyle(
+                fontSize: 12,
+                color: textSecondary.withValues(alpha: 0.6),
+              ),
+            ),
+        ],
       ),
     );
   }
@@ -365,101 +467,9 @@ class GradesScreen extends StatelessWidget {
             delegate: SliverChildBuilderDelegate(
               (context, index) {
               final subject = viewModel.grades[index];
-              final cardContent = Container(
-                margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
-                padding: const EdgeInsets.all(16),
-                decoration: BoxDecoration(
-                  color: cardBg,
-                  borderRadius: BorderRadius.circular(20),
-                  border: Border.all(color: border),
-                ),
-                child: GestureDetector(
-                  behavior: HitTestBehavior.opaque,
-                  onTap: () {
-                    HapticFeedback.lightImpact();
-                    _showSubjectDetails(context, subject);
-                  },
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                        children: [
-                          Expanded(
-                            child: Text(
-                              subject.subject,
-                              style: TextStyle(
-                                fontSize: 16,
-                                fontWeight: FontWeight.bold,
-                                color: textPrimary,
-                              ),
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                            ),
-                          ),
-                          const SizedBox(width: 8),
-                          Text(
-                            subject.formattedAverage,
-                            style: TextStyle(
-                              fontSize: 18,
-                              fontWeight: FontWeight.bold,
-                              color: AppTheme.getGradeColor(
-                                  subject.averageScore.round()),
-                            ),
-                          ),
-                        ],
-                      ),
-                      if (subject.teacher.isNotEmpty) ...[
-                        const SizedBox(height: 2),
-                        Text(
-                          subject.teacher,
-                          style: TextStyle(
-                            fontSize: 12,
-                            color: textSecondary,
-                          ),
-                        ),
-                      ],
-                      const SizedBox(height: 12),
-                      // Horizontal Grade Badges with Weights
-                      if (subject.grades.isNotEmpty)
-                        Wrap(
-                          spacing: 6,
-                          runSpacing: 6,
-                          children: subject.grades.map((g) {
-                            return Container(
-                              padding: const EdgeInsets.symmetric(
-                                  horizontal: 9, vertical: 5),
-                              decoration: BoxDecoration(
-                                color: AppTheme.getGradeColor(g.value)
-                                    .withValues(alpha: 0.15),
-                                borderRadius: BorderRadius.circular(8),
-                                border: Border.all(
-                                  color: AppTheme.getGradeColor(g.value)
-                                      .withValues(alpha: 0.4),
-                                ),
-                              ),
-                              child: Text(
-                                '${g.value}${g.weightSuperscript}',
-                                style: TextStyle(
-                                  fontSize: 13,
-                                  fontWeight: FontWeight.bold,
-                                  color: AppTheme.getGradeColor(g.value),
-                                ),
-                              ),
-                            );
-                          }).toList(),
-                        )
-                      else
-                        Text(
-                          'Нет текущих оценок',
-                          style: TextStyle(
-                            fontSize: 12,
-                            color: textSecondary.withValues(alpha: 0.6),
-                          ),
-                        ),
-                    ],
-                  ),
-                ),
+              final cardContent = ProMotionBouncingCard(
+                onTap: (ctx, sourceRect) => _showSubjectDetails(ctx, subject, sourceRect),
+                child: _buildSubjectCard(context, subject),
               );
 
               return CupertinoContextMenu(
@@ -494,7 +504,7 @@ class GradesScreen extends StatelessWidget {
           ),
 
         const SliverToBoxAdapter(
-          child: SizedBox(height: 32),
+          child: SizedBox(height: 120),
         ),
       ],
     );

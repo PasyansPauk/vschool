@@ -1,0 +1,198 @@
+# PROJECT MAP - vSchool
+
+## 1. System Architecture
+- **Framework**: Flutter (Dart SDK ^3.12.2)
+- **Platforms**: iOS (Primary Target), Android, Desktop/Web
+- **Design Paradigm**: Cupertino / iOS Human Interface Guidelines with dark/light themes and custom glassmorphism components.
+- **State Management**: ChangeNotifiers / ViewModel pattern (`DiaryViewModel`, `SchoolTrackerViewModel`).
+- **Data & API**:
+  - МЭШ (Московская электронная школа) API integration via `http` and `webview_flutter` (MosID auth).
+  - Persistence via `shared_preferences`.
+  - System metadata via `package_info_plus`.
+
+## 2. Critical Paths & Structure
+- `lib/main.dart`: Application entry point.
+- `lib/presentation/screens/main_navigation_screen.dart`: Bottom navigation controller (Расписание, Оценки, Домашка, Трекер).
+- `lib/presentation/screens/homework_screen.dart`: Homework list, filters ('Все', 'На завтра', 'Сделано'), relative date formatting.
+- `lib/presentation/screens/profile_modal.dart`: Profile overview, version and build display (`v${version} (Build ${buildNumber})`).
+- `lib/presentation/screens/auth_screen.dart`: Authentication / login screen.
+
+## 3. Mandatory Build & Release Protocols
+### Automated Build Number Increment
+- **Rule**: Every single build / release deployment MUST increment the build number in `pubspec.yaml` (`version: x.y.z+BUILD_NUMBER`).
+- Always explicitly declare and report the exact build number to the user when preparing and launching builds.
+- Current Build: **35** (`1.0.0+35`).
+
+
+### Process Management & Cleanup
+- When launching `flutter run --release` on a physical device, once the app is installed and launched (`Installing and launching...` completed), do NOT leave the interactive terminal task hanging indefinitely. Close/terminate the task promptly to prevent resource leakage.
+
+## 4. Changelog
+- **Build 35 (2026-09-10)**:
+  - **Identical iOS HIG Experience & Animations on Android**:
+    - Updated `lib/app_android.dart` (`AndroidSchoolDiaryApp`) to render the exact iOS HIG visual design, typography, docked Liquid Glass tab bar, and Cupertino theme (`AppTheme.getCupertinoTheme`).
+    - Configured edge-to-edge transparent system navigation bar and status bar via `SystemUiOverlayStyle`.
+    - Integrated `PopScope` on `MainNavigationScreen` for intuitive Android back navigation (returns to Tab 0 «Расписание» before exiting).
+    - Enabled all interactive animations: `ProMotionBouncingCard` press-down haptics, `showProMotionCardModal` with `ProMotionMorphRoute` spring expansion and blur collapse for lessons and homework, and Apple HIG `GradeBadge` coloring and blur.
+    - Updated `lib/main.dart` to initialize and wrap `LiquidGlassWidgets` for both iOS and Android.
+    - Generated standalone release APK (`build/app/outputs/flutter-apk/app-release.apk`) signed with debug keystore for easy distribution and testing.
+- **Build 34 (2026-09-10)**:
+  - Android Emulator Cold Boot & High-Performance Rendering (`Medium_Phone_API_36.0` with `-no-snapshot-load -gpu host`).
+  - Fixed scroll overflow in `OfflineNetworkModal`.
+- **Build 33 (2026-09-10)**:
+  - Deployed release build 33 to physical device `iPhone (Nikita)` with verified installation and launch.
+- **Build 32 (2026-09-10)**:
+  - Full Android Adaptation & Platform Separation Architecture:
+    - **Dual Entrypoints**:
+      - `lib/app_ios.dart` (`IosSchoolDiaryApp`): Dedicated iOS CupertinoApp entrypoint retaining all native Apple HIG, liquid glass shaders, CupertinoNavigationBar, context menus, and custom ProMotion transitions.
+      - `lib/app_android.dart` (`AndroidSchoolDiaryApp`): Dedicated Android MaterialApp entrypoint built on Material Design 3.
+      - `lib/main.dart`: Conditional dispatch initializing `LiquidGlassWidgets` only on iOS (`Platform.isIOS`) to prevent shader crashes on Android.
+      - `lib/app.dart`: Compatibility router exporting both platforms.
+    - **Android Native Permissions & Manifest**:
+      - Configured `android/app/src/main/AndroidManifest.xml` with `INTERNET`, `ACCESS_NETWORK_STATE`, `usesCleartextTraffic="true"`, and label "vSchool".
+    - **Theme System (`AppTheme`)**:
+      - Added `getMaterialTheme({required bool isDark})` with color scheme matching iOS dark/light palette, `CardThemeData`, `BottomSheetThemeData`, and `NavigationBarThemeData`.
+    - **Material 3 Android Components (`lib/presentation/android/`)**:
+      - `AndroidMainNavigationScreen`: Material 3 `NavigationBar` with 4 tabs, `AppBar` with class pill and profile avatar, and Android hardware back button handling via `PopScope`.
+      - `AndroidScheduleScreen`: 7-day selector, PageView, timeline break dividers (`AndroidBreakDivider`), and Material 3 pull-to-refresh (`RefreshIndicator`).
+      - `AndroidLessonCard`: High-density Material 3 lesson card with touch ripples, `GradeBadge`, and M3 Modal Bottom Sheet with Hero Grade Card & share actions.
+      - `AndroidGradesScreen`: Hero average card, `GradeBadgeRow`, and quarter history sheet with `RefreshIndicator`.
+      - `AndroidHomeworkScreen`: Filter chips ('Все', 'На завтра', 'Сделано'), `RefreshIndicator`, and assignment details sheet.
+      - `AndroidTrackerScreen`: Material 3 circular progress ring, time remaining/spent metrics, and focus status card.
+      - `AndroidAuthScreen` & `AndroidProfileModal`: Full Material 3 authentication and profile management.
+    - Zero regressions on iOS: all `lib/presentation/screens/*.dart` remain 100% untouched for iOS.
+    - Incremented build number to 32 (`1.0.0+32`).
+- **Build 31 (2026-09-10)**:
+  - iOS HIG & Dark Mode Complete Redesign of Grade Badges, Lesson Cards, Breaks & Modal Details:
+    - **Grade Badges (`GradeBadge` & `GradeBadgeRow`)**:
+      - Created standalone reusable `GradeBadge` and `GradeBadgeRow` components (`lib/presentation/widgets/grade_badge.dart`).
+      - Color coded according to specifications:
+        - 5: text `#4ADE80`, bg `rgba(74, 222, 128, 0.15)`, border `rgba(74, 222, 128, 0.30)`
+        - 4: text `#38BDF8`, bg `rgba(56, 189, 248, 0.15)`, border `rgba(56, 189, 248, 0.30)`
+        - 3: text `#FBBF24`, bg `rgba(251, 191, 36, 0.15)`, border `rgba(251, 191, 36, 0.30)`
+        - 2 / 1: text `#F87171`, bg `rgba(248, 113, 113, 0.15)`, border `rgba(248, 113, 113, 0.30)`
+      - Dimensions: 32x32px squircle (radius 10px), SF Pro Display bold 16sp with dynamic superscript weight (`²`, `³`, `⁴`, `⁵`).
+      - Integrated across `lesson_card.dart` and `grades_screen.dart` for visual cohesion.
+    - **Lesson Card (`LessonCard`)**:
+      - Surface: Deep dark surface `#1C1C1E` in dark mode, radius 16px, subtle 1px border `rgba(255, 255, 255, 0.07)` (0x12FFFFFF).
+      - Subject Title: `maxLines: 2, overflow: TextOverflow.ellipsis` to prevent any text truncation for long names.
+      - Hierarchy: Left: Subject icon in translucent rounded pill (42x42px, radius 12); Center: Title (16sp bold) -> row with room chip («каб. 427») and teacher FIO (13sp textSecondary); Right: Time badge + `GradeBadge` (or attendance badge) underneath.
+    - **Break Dividers (`ScheduleBreak`)**:
+      - Replaced massive cards with minimalist timeline dividers: 26px height, thin lines on left and right, center icon + «Перемена X мин • XX:XX – XX:XX» (12sp textSecondary) and active countdown timer, following Apple Calendar / Reminders design.
+    - **Lesson Details Modal Sheet (`_showLessonDetails`)**:
+      - Header: Large 18sp bold subject title (max 2 lines), time and lesson number subtitle, sleek circular close button.
+      - Hero Grade Card: 56x56px GradeBadge (28sp bold, radius 14px), "ОЦЕНКА ЗА УРОК" colored tag, "Вес: X" chip, type/topic («Ответ на уроке»), and optional comments.
+      - "Поделиться уроком" Button: Prominent iOS accent button (`#0A84FF` filled button, radius 14px, white Cupertino share icon and white text).
+  - Incremented build number to 31 (`1.0.0+31`).
+  - ProMotion Morph Smooth Fade & Transition Symmetry:
+    - Added dynamic opacity fading for the outer container (`containerOpacity`) and border (`borderOpacity`) in `promotion_morph_route.dart`.
+    - Added smooth backdrop blur scaling (`sigma: 30 * containerOpacity`) and soft shadow fading (`0.35 * t * containerOpacity`), completely eliminating popping/snapping upon modal collapse.
+  - Cupertino Context Menu & Native Share Sheet Fix:
+    - Replaced legacy `CupertinoContextMenu` with `CupertinoContextMenu.builder` in `lesson_card.dart`.
+    - Resolved iOS `UIActivityViewController` modal conflict by postponing `Share.share` execution (140 ms delay) until after `Navigator.pop()`.
+    - Added "Скопировать информацию" (clipboard copy with `HapticFeedback.mediumImpact()`) and "Подробнее об уроке" actions.
+    - Added margin offset compensation to `sourceRect` / `visualRect`, aligning the morphing transition strictly with the card's visible bounds.
+  - Seamless Week Switching & Gray Screen Elimination:
+    - Added `isScheduleMatchingSelectedWeek` getter in `diary_view_model.dart` and ensured `currentDaySchedule` only references the matching week.
+    - Updated `loadScheduleForWeek()` to immediately set `_isLoading = true` and notify listeners, preventing stale UI freezes.
+    - Upgraded `segmented_day_picker.dart` to compute and render all 7 calendar days directly from `weekDate`, eliminating `SizedBox.shrink()` disappearance.
+    - Added native `_buildLoadingSkeleton` with shimmering cards in `schedule_screen.dart` during week data loading.
+    - Optimized overscroll boundary swipe to immediately reposition `_pageController` before week transition begins.
+  - Incremented build number to 30 (`1.0.0+30`).
+- **Build 29 (2026-09-10)**:
+  - Root Cause Analysis & Permanent Architectural Fix for Bottom Void:
+    - Root Cause Identified: in `_ProMotionMorphDialog`, the `Offstage` measurer was an unpositioned child inside `Stack(fit: StackFit.expand)`. In Flutter, `StackFit.expand` imposes tight `BoxConstraints.tight(screenSize)` on all non-positioned children. `SizedBox(width: targetWidth)` only constrained width, leaving `minHeight = maxHeight = screenHeight`. Consequently, `_MeasureSize` was forced to measure `screenHeight` (~932pt), setting `_measuredContentHeight` to the full screen and clamping `targetHeight` to `availableHeight` (~780pt), resulting in the massive empty black void inside the card below the buttons.
+    - Architectural Fix: wrapped the `Offstage` measurer inside `Positioned(top: 0, left: 0, width: targetWidth, child: ...)`. In Flutter's `RenderStack`, a positioned child with only `top` and `width` specified receives unbounded loose vertical constraints (`minHeight: 0.0, maxHeight: renderStackHeight`).
+    - Verified via automated Flutter widget test: `Positioned` wrapping measures the EXACT intrinsic content height (~312pt) instead of the full screen (600/932pt).
+    - Result: the floating card now fits tightly around the header, info tiles, and "Поделиться уроком" button with zero extra empty space at the bottom.
+    - Updated version to `1.0.0+29`.
+- **Build 28 (2026-09-10)**:
+  - Strict Rule Enforcement: Constant Width & Adaptive Height:
+    - Width is strictly a CONSTANT (`min(screenSize.width - 36.0, 364.0)`), comfortably wide with elegant side margins.
+    - Height strictly ADAPTS to content dynamically (`targetHeight = contentH.clamp(80.0, availableHeight)`), with zero artificial void or empty space at the bottom.
+    - Empty topic/homework placeholder boxes omitted so cards only display real information.
+    - Incremented build number to 28 (`1.0.0+28`).
+- **Build 27 (2026-09-10)**:
+  - Constant Width & Dynamic Vertical Content Hugging:
+    - Fixed card width to a comfortable constant (`min(screenSize.width - 36.0, 364.0)`), giving pleasant horizontal margins without edge-to-edge stretching.
+    - Vertical height adapts strictly and dynamically to content via `_MeasureSize` (`targetHeight = contentH.clamp(100.0, availableHeight)`), completely eliminating black empty space/void at the bottom.
+    - Enlarged elements and typography across preview modals (`lesson_card.dart`, `homework_screen.dart`, `grades_screen.dart`):
+      - 40x40 subject icons with 21pt icons.
+      - 18pt bold subject titles.
+      - 14pt padding on tiles with 13.5pt body text for optimal readability.
+      - 28x28 circular '✕' close buttons with haptic feedback.
+      - Full-width Liquid Glass share and action buttons.
+    - Incremented build number to 27 (`1.0.0+27`).
+- **Build 26 (2026-09-10)**:
+  - Full Intrinsic Bidirectional Auto-Sizing (Horizontal & Vertical):
+    - Completely eliminated any hardcoded width or height in `ProMotionMorphRoute`.
+    - Integrated `IntrinsicWidth` and `_MeasureSize` measuring both `size.width` and `size.height` dynamically with tight clamps (`minWidth: 240.0`, `maxWidth: min(screenSize.width - 40.0, 360.0)`, `maxHeight: availableHeight`).
+    - The preview card tightly hugs the text both horizontally and vertically with zero empty voids or excessive black space.
+    - Cleaned up lesson preview content in `lesson_card.dart`:
+      - Removed all `width: double.infinity` forcing wide boxes.
+      - Topic and Homework tiles are only rendered if they contain actual data, completely eliminating empty placeholder boxes ("Тема не заполнена", "Домашнее задание не задано").
+      - Header subject text is bounded to 210pt max width without unbounded flex, adapting smoothly to subject title length.
+      - Share button and all tiles stretch to the uniform width of the widest element in the card (`CrossAxisAlignment.stretch`).
+    - Adapted `homework_screen.dart` and `grades_screen.dart` modals with the same compact, content-adaptive layout.
+    - Incremented build number to 26 (`1.0.0+26`).
+- **Build 25 (2026-09-10)**:
+  - Open-Source Apple-Style Preview Modal Redesign:
+    - Eliminated bottom empty space/void entirely: replaced `Expanded` and unconstrained `SingleChildScrollView` with direct unconstrained `_MeasureSize` measuring the actual `Column(mainAxisSize: MainAxisSize.min)` content. Modal dynamically wraps its content with tight 16pt vertical padding.
+    - Reduced oversized card dimensions: set `maxCardWidth = min(screenSize.width - 48.0, 360.0)`, transforming the card into a compact, perfectly proportioned floating Liquid Glass preview card.
+    - Removed clunky sheet drag handle (`Container(width: 36, height: 5, ...)`).
+    - Added native iOS circular '✕' close button in the top right of every preview card header (lessons, homework, grades).
+    - Replaced oversized stark white rectangular "Закрыть" button with a sleek Liquid Glass "Поделиться уроком" action button and intuitive gestures (tap backdrop, swipe down, or tap top-right '✕' button).
+    - Incremented build number to 25 (`1.0.0+25`).
+- **Build 24 (2026-09-10)**:
+  - ProMotion Dynamic Height Auto-Sizing: eliminated unwanted empty space / void in the expanded modal dialogs. Implemented `_MeasureSize` custom `RenderProxyBox` layout measurement that computes the exact intrinsic pixel height of content dynamically, setting modal target height to `(measuredContentHeight + 26.0).clamp(160.0, availableHeight)`.
+  - Seamless Reverse Morph Crossfade: resolved abrupt text snapping on card close. Integrated `collapsedChild` into `showProMotionCardModal` and `_ProMotionMorphDialog`, crossfading preview card content (`(0.45 - t) / 0.45`) with expanded modal details (`(t - 0.15) / 0.85`). When closing, the preview card text and icons smoothly fade in as the card contracts back to its exact list slot.
+  - Reusable Collapsed Cards: refactored and extracted `_buildHomeworkCard` in `homework_screen.dart` and `_buildSubjectCard` in `grades_screen.dart` to support both list rendering and seamless morph route transitions.
+  - Fixed "Поделиться уроком" (Share Lesson): wrapped share button in `Builder(builder: (shareBtnContext) => ...)` and extracted global `RenderBox` bounds for `sharePositionOrigin: origin`, resolving iOS `UIActivityViewController` anchor requirement. Included complete lesson metadata (room, teacher, topic, homework, grades).
+  - Incremented build number to 24 (`1.0.0+24`).
+- **Build 23 (2026-09-10)**:
+  - Apple ProMotion Card Morphing Overhaul: completely redesigned the opening and closing transitions for lesson cards, homework items, and grades subjects.
+  - Eliminated standard bottom sheets (`showModalBottomSheet`) that slid up from the bottom edge of the screen.
+  - Implemented `ProMotionBouncingCard`: tactile touch-down indentation effect (scale `0.965`, duration `110ms`) with haptic feedback (`HapticFeedback.lightImpact()`), providing physical button press realism.
+  - Implemented `ProMotionMorphRoute` / `showProMotionCardModal`: seamless Apple container transform expansion. The card's exact bounding rect ("овал") smoothly expands directly from its origin position on screen into a centered floating Liquid Glass card with generous corner radius (`30pt`), hairline glass border, and soft elevation shadow.
+  - Content crossfade: detailed lesson/homework/grade information fades in smoothly (`FadeTransition`) as the container expands.
+  - Spatial collapse: upon closing (via 'Закрыть' button, backdrop tap, or downward swipe drag), the floating card smoothly morphs right back into its exact source position in the list.
+  - Incremented build number to 23 (`1.0.0+23`).
+- **Build 22 (2026-09-10)**:
+  - Fixed schedule day swiping animation: replaced static `GestureDetector(onHorizontalDragEnd: ...)` and clunky `AnimatedSwitcher` with an interactive, fluid, native `PageView.builder` for the days of the week.
+  - Implemented 1:1 tactile finger tracking with native iOS `BouncingScrollPhysics` — days now glide immediately and smoothly under the user's finger with zero delay.
+  - Synchronized `SegmentedDayPicker` with `PageView`: swiping pages instantly updates the active day pill, and tapping any day pill smoothly animates `PageController` via `animateToPage(index, duration: 280ms, curve: Curves.easeOutCubic)`.
+  - Added boundary overscroll detection: swiping past Sunday or before Monday smoothly transitions to the next/previous week.
+  - Added multi-week memory caching (`_weekMemoryCache`) and `getCachedWeek` in `DiaryRepository`, making week switches instantaneous (0ms) without network round-trips.
+  - Removed blocking full-screen blur loader on week/day switching when schedules are already available.
+  - Incremented build number to 22 (`1.0.0+22`).
+- **Build 21 (2026-09-10)**:
+  - Fixed missing grades bug: resolved root causes where marks/grades were not appearing in the Grades tab.
+  - Upgraded `mes_api_service.dart:fetchGrades()`: added academic year date range parameters (`from=${academicYearStart}&to=...`), expanded queries across 9 candidate endpoints (`/subject_marks` and `/marks`, mobile and web), implemented universal parser `_parseMarksResponse` handling both subject-nested marks (`periods`, `period_marks`, `quarters`) and flat mark lists, and added robust `_parseSingleGrade` handling all grade formats (ints, doubles, "5/4", "5.0", strings).
+  - Enhanced lesson grade extraction in `mes_api_service.dart:_extractGrades()`: added full inspection of `marks`, `estimates`, `estimation`, `evaluations`, `lesson_marks`, `activity_marks`, and nested value structures.
+  - Upgraded `diary_repository.dart:getGrades()`: added verification that cached subjects contain grades before returning; implemented `_mergeWithScheduleGrades()` to seamlessly incorporate grades attached to schedule lessons.
+  - Enhanced `diary_view_model.dart`: added `_mergeScheduleGradesIntoGrades()` on initial load, week switches, and refresh; sorts subjects with active grades to the top of the list for immediate visibility.
+  - Made `GradeItem.fromJson` and `SubjectSummary.fromJson` defensively type-safe against JSON type variations.
+  - Incremented build number to 21 (`1.0.0+21`).
+- **Build 20 (2026-09-10)**:
+  - Fixed top navigation bar overlap bug: restored `SafeArea(bottom: false)` wrapping in `MainNavigationScreen._buildPage`, ensuring week range header (`1 – 7 сентября`), chevrons, day picker numbers, formula card, and homework segment control start cleanly below `CupertinoNavigationBar` across all screens.
+  - Removed grab handle indicators ("полоски") completely from all modal sheets (`lesson_card.dart`, `grades_screen.dart`, `homework_screen.dart`, and `profile_modal.dart`).
+  - Redesigned bottom navigation bar to be docked to the bottom edge (`bottom: 0`, full width) with Apple Liquid Glass frosted blur (`BackdropFilter(sigmaX: 30, sigmaY: 30)`), native hairline border, and safe area insets, eliminating the black gap/void below the tab bar permanently.
+  - Upgraded lesson details modal to full Liquid Glass styling (`ClipRRect` + `BackdropFilter` with `0xC5121214` tint and 0.8 initial child size), ensuring all content and action buttons are immediately visible without clipping.
+  - Incremented build number to 20 (`1.0.0+20`).
+- **Build 19 (2026-09-10)**:
+  - Integrated `liquid_glass_widgets` for Apple Liquid Glass design language across the app.
+  - Eliminated the black bottom strip below the navigation bar by removing the artificial `Padding(bottom: 100)` on the page scaffold and switching to `GlassTabBar.bottom`.
+  - Added 120px bottom sliver padding across `HomeworkScreen`, `GradesScreen`, and `TrackerScreen` so scrollable items comfortably clear the floating tab bar without content being cut off.
+  - Replaced homework tab filter with Apple `GlassSegmentedControl`.
+  - Redesigned Profile Modal with `liquid_glass_widgets` (`GlassCard`, `GlassGroupedSection`, `GlassListTile`), fixed initial sheet size to 0.88 to prevent half-screen truncation, and extended glass backdrop to bottom safe area to remove black cutoff.
+  - Incremented build number to 19 (`1.0.0+19`).
+- **Build 18 (2026-09-10)**:
+  - Fixed issue where 'ИДЁТ СЕЙЧАС' active lesson indicator appeared on every day of the week instead of only today.
+  - Added strict date checks (`isToday`) in `SchoolTrackerViewModel` and `ScheduleScreen` to ensure current/next lesson tracking only runs for today's schedule.
+  - Fixed fallback in `todaySchedule` in `DiaryViewModel`.
+  - Incremented build number to 18.
+- **Build 17 (2026-09-10)**:
+  - Updated homework filtering: tasks are strictly bounded between yesterday (max past) and +7 days ahead.
+  - Updated homework date labels to human-readable relative formats: "вчера", "сегодня", "завтра", "на [день недели] [число] [месяц]" (e.g. "на четверг 12 сентября").
+  - Fixed count calculation on the 'Все' homework tab.
+  - Incremented build number to 17.

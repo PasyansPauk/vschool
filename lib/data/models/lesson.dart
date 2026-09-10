@@ -48,8 +48,8 @@ class Lesson {
       teacher: json['teacher'] as String? ?? '',
       topic: json['topic'] as String? ?? '',
       homework: json['homework'] as String?,
-      grade: json['grade'] != null
-          ? GradeItem.fromJson(json['grade'] as Map<String, dynamic>)
+      grade: json['grade'] != null && json['grade'] is Map
+          ? GradeItem.fromJson(Map<String, dynamic>.from(json['grade'] as Map))
           : null,
       attendance: json['attendance'] as String?,
     );

@@ -28,17 +28,50 @@ class GradeItem {
       };
 
   factory GradeItem.fromJson(Map<String, dynamic> json) {
+    int parsedVal = 5;
+    final rawVal = json['value'];
+    if (rawVal is int) {
+      parsedVal = rawVal;
+    } else if (rawVal is num) {
+      parsedVal = rawVal.round();
+    } else if (rawVal != null) {
+      final str = rawVal.toString().trim();
+      if (str.contains('/')) {
+        parsedVal = int.tryParse(str.split('/')[0].trim()) ?? 5;
+      } else {
+        parsedVal = int.tryParse(str) ?? 5;
+      }
+    }
+
+    int parsedWeight = 1;
+    final rawWeight = json['weight'];
+    if (rawWeight is int) {
+      parsedWeight = rawWeight;
+    } else if (rawWeight is num) {
+      parsedWeight = rawWeight.round();
+    } else if (rawWeight != null) {
+      parsedWeight = int.tryParse(rawWeight.toString().trim()) ?? 1;
+    }
+
     return GradeItem(
-      id: json['id'] as String? ?? '',
-      subject: json['subject'] as String? ?? '',
-      value: json['value'] as int? ?? 5,
-      weight: json['weight'] as int? ?? 1,
+      id: (json['id'] ?? '').toString(),
+      subject: (json['subject'] ?? '').toString(),
+      value: parsedVal,
+      weight: parsedWeight,
       date: json['date'] != null
-          ? DateTime.tryParse(json['date'] as String) ?? DateTime.now()
+          ? (DateTime.tryParse(json['date'].toString()) ?? DateTime.now())
           : DateTime.now(),
-      topic: json['topic'] as String? ?? '',
-      comment: json['comment'] as String?,
+      topic: (json['topic'] ?? '').toString(),
+      comment: json['comment']?.toString(),
     );
+  }
+
+  String get formattedDate {
+    final months = [
+      '', 'янв', 'фев', 'мар', 'апр', 'мая', 'июн',
+      'июл', 'авг', 'сен', 'окт', 'ноя', 'дек'
+    ];
+    return '${date.day} ${months[date.month]}';
   }
 
   String get weightSuperscript {

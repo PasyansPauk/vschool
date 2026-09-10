@@ -4,39 +4,22 @@ import '../../core/theme/app_theme.dart';
 import '../../data/models/school_day_schedule.dart';
 
 class SegmentedDayPicker extends StatelessWidget {
-  final List<SchoolDaySchedule> schedules;
+  final DateTime weekDate;
+  final List<SchoolDaySchedule>? schedules;
   final int selectedIndex;
   final ValueChanged<int> onDaySelected;
   final bool isDark;
 
   const SegmentedDayPicker({
     super.key,
-    required this.schedules,
+    required this.weekDate,
+    this.schedules,
     required this.selectedIndex,
     required this.onDaySelected,
     required this.isDark,
   });
 
-  String _shortDay(String dayName) {
-    switch (dayName.toLowerCase()) {
-      case 'понедельник':
-        return 'ПН';
-      case 'вторник':
-        return 'ВТ';
-      case 'среда':
-        return 'СР';
-      case 'четверг':
-        return 'ЧТ';
-      case 'пятница':
-        return 'ПТ';
-      case 'суббота':
-        return 'СБ';
-      case 'воскресенье':
-        return 'ВС';
-      default:
-        return dayName.length >= 2 ? dayName.substring(0, 2).toUpperCase() : dayName;
-    }
-  }
+  static const List<String> _shortDays = ['ПН', 'ВТ', 'СР', 'ЧТ', 'ПТ', 'СБ', 'ВС'];
 
   bool _isToday(DateTime date) {
     final now = DateTime.now();
@@ -45,8 +28,6 @@ class SegmentedDayPicker extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    if (schedules.isEmpty) return const SizedBox.shrink();
-
     final activeBg = isDark ? CupertinoColors.white : CupertinoColors.black;
     final activeText = isDark ? CupertinoColors.black : CupertinoColors.white;
     final inactiveBg =
@@ -56,18 +37,21 @@ class SegmentedDayPicker extends StatelessWidget {
     final subtitleColor =
         isDark ? AppTheme.darkTextSecondary : AppTheme.lightTextSecondary;
 
+    final monday = DateTime(weekDate.year, weekDate.month, weekDate.day)
+        .subtract(Duration(days: weekDate.weekday - 1));
+
     return Container(
       height: 76,
       padding: const EdgeInsets.symmetric(horizontal: 12),
       child: Row(
-        children: List.generate(schedules.length, (index) {
-          final item = schedules[index];
+        children: List.generate(7, (index) {
+          final dayDate = monday.add(Duration(days: index));
           final isSelected = index == selectedIndex;
-          final isWeekend = item.date.weekday == DateTime.saturday || item.date.weekday == DateTime.sunday;
-          final isTodayDate = _isToday(item.date);
+          final isWeekend = index >= 5; // Saturday (5) and Sunday (6)
+          final isTodayDate = _isToday(dayDate);
 
           // Color for the date number
-          Color dateNumberColor;
+          final Color dateNumberColor;
           if (isSelected) {
             dateNumberColor = activeText;
           } else if (isWeekend) {
@@ -78,6 +62,7 @@ class SegmentedDayPicker extends StatelessWidget {
 
           return Expanded(
             child: GestureDetector(
+              behavior: HitTestBehavior.opaque,
               onTap: () {
                 HapticFeedback.selectionClick();
                 onDaySelected(index);
@@ -102,7 +87,7 @@ class SegmentedDayPicker extends StatelessWidget {
                   mainAxisAlignment: MainAxisAlignment.center,
                   children: [
                     Text(
-                      _shortDay(item.dayName),
+                      _shortDays[index],
                       style: TextStyle(
                         fontSize: 11,
                         fontWeight: FontWeight.w600,
@@ -113,7 +98,7 @@ class SegmentedDayPicker extends StatelessWidget {
                     ),
                     const SizedBox(height: 3),
                     Text(
-                      '${item.date.day}',
+                      '${dayDate.day}',
                       style: TextStyle(
                         fontSize: 17,
                         fontWeight: FontWeight.bold,

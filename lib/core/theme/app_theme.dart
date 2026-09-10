@@ -1,4 +1,5 @@
 import 'package:flutter/cupertino.dart';
+import 'package:flutter/material.dart';
 
 class AppTheme {
   AppTheme._();
@@ -44,6 +45,102 @@ class AppTheme {
           fontSize: 16,
           letterSpacing: -0.2,
         ),
+      ),
+    );
+  }
+
+  static ThemeData getMaterialTheme({required bool isDark}) {
+    final bg = isDark ? darkBackground : lightBackground;
+    final surface = isDark ? darkSurface : lightSurface;
+    final textPrimary = isDark ? darkTextPrimary : lightTextPrimary;
+    final textSecondary = isDark ? darkTextSecondary : lightTextSecondary;
+    final border = isDark ? darkBorder : lightBorder;
+
+    final colorScheme = isDark
+        ? const ColorScheme.dark(
+            primary: Color(0xFF38BDF8),
+            onPrimary: Color(0xFF000000),
+            secondary: Color(0xFF0A84FF),
+            surface: Color(0xFF121214),
+            onSurface: Color(0xFFFFFFFF),
+            outline: Color(0xFF2C2C2E),
+          )
+        : const ColorScheme.light(
+            primary: Color(0xFF0284C7),
+            onPrimary: Color(0xFFFFFFFF),
+            secondary: Color(0xFF0A84FF),
+            surface: Color(0xFFFFFFFF),
+            onSurface: Color(0xFF000000),
+            outline: Color(0xFFD1D1D6),
+          );
+
+    return ThemeData(
+      useMaterial3: true,
+      brightness: isDark ? Brightness.dark : Brightness.light,
+      colorScheme: colorScheme,
+      scaffoldBackgroundColor: bg,
+      appBarTheme: AppBarTheme(
+        backgroundColor: bg,
+        foregroundColor: textPrimary,
+        elevation: 0,
+        scrolledUnderElevation: 0,
+        centerTitle: false,
+        titleTextStyle: TextStyle(
+          color: textPrimary,
+          fontSize: 20,
+          fontWeight: FontWeight.bold,
+        ),
+      ),
+      cardTheme: CardThemeData(
+        color: surface,
+        elevation: 0,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(16),
+          side: BorderSide(color: border, width: 1),
+        ),
+        margin: EdgeInsets.zero,
+      ),
+      bottomSheetTheme: BottomSheetThemeData(
+        backgroundColor: surface,
+        surfaceTintColor: Colors.transparent,
+        shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+        ),
+      ),
+      navigationBarTheme: NavigationBarThemeData(
+        backgroundColor: isDark ? const Color(0xFF121214) : const Color(0xFFFFFFFF),
+        elevation: 8,
+        indicatorColor: isDark ? const Color(0x3338BDF8) : const Color(0x220284C7),
+        labelTextStyle: WidgetStateProperty.resolveWith((states) {
+          if (states.contains(WidgetState.selected)) {
+            return TextStyle(
+              fontSize: 12,
+              fontWeight: FontWeight.w600,
+              color: isDark ? const Color(0xFF38BDF8) : const Color(0xFF0284C7),
+            );
+          }
+          return TextStyle(
+            fontSize: 12,
+            fontWeight: FontWeight.w400,
+            color: textSecondary,
+          );
+        }),
+        iconTheme: WidgetStateProperty.resolveWith((states) {
+          if (states.contains(WidgetState.selected)) {
+            return IconThemeData(
+              color: isDark ? const Color(0xFF38BDF8) : const Color(0xFF0284C7),
+              size: 24,
+            );
+          }
+          return IconThemeData(
+            color: textSecondary,
+            size: 24,
+          );
+        }),
+      ),
+      dividerTheme: DividerThemeData(
+        color: border,
+        thickness: 1,
       ),
     );
   }

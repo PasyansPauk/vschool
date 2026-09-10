@@ -1,4 +1,6 @@
+import 'dart:ui';
 import 'package:flutter/cupertino.dart';
+import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import '../../core/theme/app_theme.dart';
 import '../view_models/diary_view_model.dart';
@@ -29,22 +31,24 @@ class MainNavigationScreen extends StatefulWidget {
 class _MainNavigationScreenState extends State<MainNavigationScreen> {
   int _currentTabIndex = 0;
   bool _modalShown = false;
+  late PageController _pageController;
 
   @override
   void initState() {
     super.initState();
+    _pageController = PageController(initialPage: _currentTabIndex);
     widget.diaryViewModel.addListener(_handleViewModelUpdates);
   }
 
   @override
   void dispose() {
+    _pageController.dispose();
     widget.diaryViewModel.removeListener(_handleViewModelUpdates);
     super.dispose();
   }
 
   void _handleViewModelUpdates() {
     if (!mounted) return;
-    // If error banner is flagged and modal not currently shown
     if (widget.diaryViewModel.showVpnOrOfflineBanner && !_modalShown) {
       _modalShown = true;
       WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -81,142 +85,237 @@ class _MainNavigationScreenState extends State<MainNavigationScreen> {
     }
   }
 
+  void _onTabTapped(int index) {
+    if (index != _currentTabIndex) {
+      HapticFeedback.selectionClick();
+      setState(() => _currentTabIndex = index);
+      _pageController.animateToPage(
+        index,
+        duration: const Duration(milliseconds: 300),
+        curve: Curves.easeOutCubic,
+      );
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return ListenableBuilder(
       listenable: Listenable.merge([widget.diaryViewModel, widget.trackerViewModel]),
       builder: (context, _) {
         final isDark = widget.diaryViewModel.isDarkTheme;
-        final textPrimary =
-            isDark ? AppTheme.darkTextPrimary : AppTheme.lightTextPrimary;
+        final textPrimary = isDark ? AppTheme.darkTextPrimary : AppTheme.lightTextPrimary;
         final profile = widget.diaryViewModel.profile;
 
-        return CupertinoTabScaffold(
-          tabBar: CupertinoTabBar(
-            currentIndex: _currentTabIndex,
-            onTap: (index) {
-              if (index != _currentTabIndex) {
-                HapticFeedback.selectionClick();
-              }
-              setState(() => _currentTabIndex = index);
-            },
-            backgroundColor: isDark
-                ? const Color(0xEE121214)
-                : const Color(0xEEFFFFFF),
-            activeColor:
-                isDark ? CupertinoColors.white : CupertinoColors.black,
-            inactiveColor:
-                isDark ? const Color(0xFF71717A) : const Color(0xFFA1A1AA),
-            iconSize: 22,
-            items: const [
-              BottomNavigationBarItem(
-                icon: Icon(CupertinoIcons.calendar),
-                label: 'Расписание',
-              ),
-              BottomNavigationBarItem(
-                icon: Icon(CupertinoIcons.chart_bar_square),
-                label: 'Оценки',
-              ),
-              BottomNavigationBarItem(
-                icon: Icon(CupertinoIcons.checkmark_square),
-                label: 'Домашка',
-              ),
-              BottomNavigationBarItem(
-                icon: Icon(CupertinoIcons.stopwatch),
-                label: 'Трекер',
-              ),
-            ],
-          ),
-          tabBuilder: (context, index) {
-            return CupertinoPageScaffold(
-              backgroundColor: isDark
-                  ? AppTheme.darkBackground
-                  : AppTheme.lightBackground,
-              navigationBar: CupertinoNavigationBar(
-                backgroundColor: isDark
-                    ? const Color(0xCC121214)
-                    : const Color(0xCCFFFFFF),
-                middle: Text(
-                  _getTitleForTab(index),
-                  style: TextStyle(
-                    fontSize: 17,
-                    fontWeight: FontWeight.bold,
-                    color: textPrimary,
-                  ),
-                ),
-                leading: Padding(
-                  padding: const EdgeInsets.symmetric(vertical: 8),
-                  child: Container(
-                    padding:
-                        const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-                    decoration: BoxDecoration(
-                      color: isDark
-                          ? AppTheme.darkSurfaceSecondary
-                          : AppTheme.lightSurfaceSecondary,
-                      borderRadius: BorderRadius.circular(8),
-                    ),
-                    child: Text(
-                      profile?.className.isNotEmpty == true
-                          ? profile!.className
-                          : 'МЭШ',
-                      style: TextStyle(
-                        fontSize: 11,
-                        fontWeight: FontWeight.w700,
-                        color: textPrimary,
-                      ),
-                    ),
-                  ),
-                ),
-                trailing: CupertinoButton(
-                  padding: EdgeInsets.zero,
-                  onPressed: () {
-                    ProfileModal.show(
-                      context,
-                      viewModel: widget.diaryViewModel,
-                      onLogout: widget.onLogout,
-                      isDark: isDark,
-                    );
+        return PopScope(
+          canPop: _currentTabIndex == 0,
+          onPopInvokedWithResult: (didPop, result) {
+            if (!didPop && _currentTabIndex != 0) {
+              _onTabTapped(0);
+            }
+          },
+          child: Scaffold(
+            backgroundColor: isDark ? AppTheme.darkBackground : AppTheme.lightBackground,
+            extendBody: true,
+            body: Stack(
+              children: [
+                PageView(
+                  controller: _pageController,
+                  physics: const BouncingScrollPhysics(),
+                  onPageChanged: (index) {
+                    HapticFeedback.lightImpact();
+                    setState(() => _currentTabIndex = index);
                   },
-                  child: Container(
-                    width: 32,
-                    height: 32,
-                    decoration: BoxDecoration(
-                      color: isDark
-                          ? CupertinoColors.white
-                          : CupertinoColors.black,
-                      shape: BoxShape.circle,
-                    ),
-                    child: Center(
-                      child: Text(
-                        profile != null && profile.fullName.isNotEmpty
-                            ? profile.fullName.substring(0, 1)
-                            : 'У',
-                        style: TextStyle(
-                          fontSize: 14,
-                          fontWeight: FontWeight.bold,
+                  children: [
+                    _buildPage(0, isDark, textPrimary, profile),
+                    _buildPage(1, isDark, textPrimary, profile),
+                    _buildPage(2, isDark, textPrimary, profile),
+                    _buildPage(3, isDark, textPrimary, profile),
+                  ],
+                ),
+                
+                // Docked Liquid Glass Tab Bar (Apple native bottom bar)
+                Positioned(
+                  bottom: 0,
+                  left: 0,
+                  right: 0,
+                  child: ClipRect(
+                    child: BackdropFilter(
+                      filter: ImageFilter.blur(sigmaX: 30, sigmaY: 30),
+                      child: Container(
+                        decoration: BoxDecoration(
                           color: isDark
-                              ? CupertinoColors.black
-                              : CupertinoColors.white,
+                              ? const Color(0x75121214)
+                              : const Color(0x85FFFFFF),
+                          border: Border(
+                            top: BorderSide(
+                              color: isDark
+                                  ? const Color(0x28FFFFFF)
+                                  : const Color(0x20000000),
+                              width: 0.5,
+                            ),
+                          ),
+                        ),
+                        padding: EdgeInsets.only(
+                          bottom: MediaQuery.of(context).padding.bottom,
+                        ),
+                        height: 52 + MediaQuery.of(context).padding.bottom,
+                        child: Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceAround,
+                          children: [
+                            _buildDockedTabItem(
+                              index: 0,
+                              icon: CupertinoIcons.calendar,
+                              label: 'Расписание',
+                              isDark: isDark,
+                            ),
+                            _buildDockedTabItem(
+                              index: 1,
+                              icon: CupertinoIcons.chart_bar_square,
+                              label: 'Оценки',
+                              isDark: isDark,
+                            ),
+                            _buildDockedTabItem(
+                              index: 2,
+                              icon: CupertinoIcons.checkmark_square,
+                              label: 'Домашка',
+                              isDark: isDark,
+                            ),
+                            _buildDockedTabItem(
+                              index: 3,
+                              icon: CupertinoIcons.stopwatch,
+                              label: 'Трекер',
+                              isDark: isDark,
+                            ),
+                          ],
                         ),
                       ),
                     ),
                   ),
                 ),
-              ),
-              child: SafeArea(
-                bottom: false,
-                child: _buildTabContent(index),
-              ),
-            );
-          },
+              ],
+            ),
+          ),
         );
       },
     );
   }
 
-  Widget _buildTabContent(int index) {
-    final isDark = widget.diaryViewModel.isDarkTheme;
+  Widget _buildDockedTabItem({
+    required int index,
+    required IconData icon,
+    required String label,
+    required bool isDark,
+  }) {
+    final isSelected = index == _currentTabIndex;
+    final selectedColor = isDark ? CupertinoColors.white : CupertinoColors.black;
+    const unselectedColor = Color(0xFF8E8E93);
+    final color = isSelected ? selectedColor : unselectedColor;
 
+    return Expanded(
+      child: CupertinoButton(
+        padding: EdgeInsets.zero,
+        onPressed: () => _onTabTapped(index),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(
+              icon,
+              color: color,
+              size: 24,
+            ),
+            const SizedBox(height: 3),
+            Text(
+              label,
+              style: TextStyle(
+                fontSize: 10,
+                fontWeight: isSelected ? FontWeight.w600 : FontWeight.w500,
+                color: color,
+                letterSpacing: -0.2,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildPage(int index, bool isDark, Color textPrimary, dynamic profile) {
+    return CupertinoPageScaffold(
+      backgroundColor: Colors.transparent,
+      navigationBar: CupertinoNavigationBar(
+        backgroundColor: isDark
+            ? const Color(0x70121214) // Liquid Glass (44% opacity)
+            : const Color(0x70FFFFFF),
+        middle: Text(
+          _getTitleForTab(index),
+          style: TextStyle(
+            fontSize: 17,
+            fontWeight: FontWeight.bold,
+            color: textPrimary,
+          ),
+        ),
+        leading: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 8),
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+            decoration: BoxDecoration(
+              color: isDark
+                  ? AppTheme.darkSurfaceSecondary
+                  : AppTheme.lightSurfaceSecondary,
+              borderRadius: BorderRadius.circular(8),
+            ),
+            child: Text(
+              profile?.className.isNotEmpty == true
+                  ? profile!.className
+                  : 'МЭШ',
+              style: TextStyle(
+                fontSize: 11,
+                fontWeight: FontWeight.w700,
+                color: textPrimary,
+              ),
+            ),
+          ),
+        ),
+        trailing: CupertinoButton(
+          padding: EdgeInsets.zero,
+          onPressed: () {
+            ProfileModal.show(
+              context,
+              viewModel: widget.diaryViewModel,
+              onLogout: widget.onLogout,
+              isDark: isDark,
+            );
+          },
+          child: Container(
+            width: 32,
+            height: 32,
+            decoration: BoxDecoration(
+              color: isDark ? CupertinoColors.white : CupertinoColors.black,
+              shape: BoxShape.circle,
+            ),
+            child: Center(
+              child: Text(
+                profile != null && profile.fullName.isNotEmpty
+                    ? profile.fullName.substring(0, 1)
+                    : 'У',
+                style: TextStyle(
+                  fontSize: 14,
+                  fontWeight: FontWeight.bold,
+                  color: isDark ? CupertinoColors.black : CupertinoColors.white,
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+      child: SafeArea(
+        bottom: false,
+        child: _buildTabContent(index, isDark),
+      ),
+    );
+  }
+
+  Widget _buildTabContent(int index, bool isDark) {
     switch (index) {
       case 0:
         return ScheduleScreen(

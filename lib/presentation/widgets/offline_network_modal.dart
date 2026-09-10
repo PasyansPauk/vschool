@@ -64,9 +64,10 @@ class OfflineNetworkModal extends StatelessWidget {
           ),
         ],
       ),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
+      child: SingleChildScrollView(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
           // Icon with subtle badge
           Container(
             width: 56,
@@ -169,6 +170,7 @@ class OfflineNetworkModal extends StatelessWidget {
           ),
         ],
       ),
-    );
-  }
+    ),
+  );
+}
 }

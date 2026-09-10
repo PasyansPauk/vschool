@@ -1,6 +1,7 @@
 import '../models/lesson.dart';
 import '../models/school_day_schedule.dart';
 import '../models/subject_summary.dart';
+import '../models/grade_item.dart';
 import '../models/homework_item.dart';
 import '../models/user_profile.dart';
 import '../services/cache_service.dart';
@@ -29,12 +30,31 @@ class DiaryRepository {
     return fresh;
   }
 
+  final Map<String, List<SchoolDaySchedule>> _weekMemoryCache = {};
+
+  String _getWeekKey(DateTime date) {
+    final monday = DateTime(date.year, date.month, date.day)
+        .subtract(Duration(days: date.weekday - 1));
+    return '${monday.year}_${monday.month}_${monday.day}';
+  }
+
+  List<SchoolDaySchedule>? getCachedWeek(DateTime date) {
+    return _weekMemoryCache[_getWeekKey(date)];
+  }
+
   Future<List<SchoolDaySchedule>> getSchedules({
     bool forceRefresh = false,
     DateTime? targetDate,
   }) async {
-    final isCurrentWeek = targetDate == null || _isSameWeek(targetDate, DateTime.now());
-    var cached = isCurrentWeek ? await _cacheService.getSchedules() : null;
+    final target = targetDate ?? DateTime.now();
+    final weekKey = _getWeekKey(target);
+
+    if (!forceRefresh && _weekMemoryCache.containsKey(weekKey)) {
+      return _weekMemoryCache[weekKey]!;
+    }
+
+    // Always try to read from cache
+    var cached = await _cacheService.getSchedules();
 
     if (cached != null) {
       final sanitized = <SchoolDaySchedule>[];
@@ -65,19 +85,21 @@ class DiaryRepository {
         ));
       }
       cached = sanitized;
+      if (cached.isNotEmpty) {
+        _weekMemoryCache[_getWeekKey(cached.first.date)] = cached;
+      }
     }
 
-    if (!forceRefresh && cached != null && cached.isNotEmpty) {
-      return cached;
+    if (!forceRefresh && _weekMemoryCache.containsKey(weekKey)) {
+      return _weekMemoryCache[weekKey]!;
     }
 
     try {
       final fresh = await _apiService.fetchSchedules(forDate: targetDate);
       if (fresh.isNotEmpty) {
-        if (isCurrentWeek) {
-          await _cacheService.saveSchedules(fresh);
-          await _cacheService.saveLastSync(DateTime.now());
-        }
+        _weekMemoryCache[weekKey] = fresh;
+        await _cacheService.saveSchedules(fresh);
+        await _cacheService.saveLastSync(DateTime.now());
         return fresh;
       }
       return cached ?? [];
@@ -91,29 +113,91 @@ class DiaryRepository {
     }
   }
 
-  bool _isSameWeek(DateTime a, DateTime b) {
-    final monA = DateTime(a.year, a.month, a.day).subtract(Duration(days: a.weekday - 1));
-    final monB = DateTime(b.year, b.month, b.day).subtract(Duration(days: b.weekday - 1));
-    return monA.year == monB.year && monA.month == monB.month && monA.day == monB.day;
-  }
-
   Future<List<SubjectSummary>> getGrades({bool forceRefresh = false}) async {
     final cached = await _cacheService.getGrades();
+    final hasAnyGrades = cached != null && cached.any((s) => s.grades.isNotEmpty);
 
-    if (!forceRefresh && cached != null && cached.isNotEmpty) {
-      return cached;
+    if (!forceRefresh && hasAnyGrades) {
+      return await _mergeWithScheduleGrades(cached);
     }
 
     try {
       final fresh = await _apiService.fetchGrades();
       if (fresh.isNotEmpty) {
-        await _cacheService.saveGrades(fresh);
-        return fresh;
+        final merged = await _mergeWithScheduleGrades(fresh);
+        await _cacheService.saveGrades(merged);
+        return merged;
+      }
+      if (cached != null && cached.isNotEmpty) {
+        final merged = await _mergeWithScheduleGrades(cached);
+        await _cacheService.saveGrades(merged);
+        return merged;
+      }
+      final scheduleOnly = await _mergeWithScheduleGrades([]);
+      if (scheduleOnly.isNotEmpty) {
+        await _cacheService.saveGrades(scheduleOnly);
+        return scheduleOnly;
       }
       return cached ?? [];
     } catch (_) {
-      return cached ?? [];
+      if (cached != null && cached.isNotEmpty) {
+        return await _mergeWithScheduleGrades(cached);
+      }
+      return await _mergeWithScheduleGrades([]);
     }
+  }
+
+  Future<List<SubjectSummary>> _mergeWithScheduleGrades(List<SubjectSummary> base) async {
+    final schedules = await _cacheService.getSchedules();
+    if (schedules == null || schedules.isEmpty) return base;
+
+    final map = <String, SubjectSummary>{};
+    for (final s in base) {
+      map[s.subject.trim().toLowerCase()] = s;
+    }
+
+    for (final day in schedules) {
+      for (final lesson in day.lessons) {
+        final g = lesson.grade;
+        if (g != null && g.value > 0) {
+          final subjKey = lesson.subject.trim().toLowerCase();
+          if (subjKey.isEmpty) continue;
+
+          final existing = map[subjKey];
+          if (existing != null) {
+            final alreadyHas = existing.grades.any((item) =>
+                (item.id.isNotEmpty && item.id == g.id) ||
+                (item.value == g.value &&
+                    item.date.year == g.date.year &&
+                    item.date.month == g.date.month &&
+                    item.date.day == g.date.day));
+            if (!alreadyHas) {
+              map[subjKey] = existing.copyWith(
+                grades: List<GradeItem>.from(existing.grades)..add(g),
+              );
+            }
+          } else {
+            map[subjKey] = SubjectSummary(
+              subject: lesson.subject.trim(),
+              teacher: lesson.teacher,
+              grades: [g],
+            );
+          }
+        }
+      }
+    }
+
+    final result = map.values.toList();
+    result.sort((a, b) {
+      if (a.grades.isNotEmpty && b.grades.isEmpty) return -1;
+      if (a.grades.isEmpty && b.grades.isNotEmpty) return 1;
+      if (a.grades.length != b.grades.length) {
+        return b.grades.length.compareTo(a.grades.length);
+      }
+      return a.subject.compareTo(b.subject);
+    });
+
+    return result;
   }
 
   Future<List<HomeworkItem>> getHomeworks({bool forceRefresh = false}) async {

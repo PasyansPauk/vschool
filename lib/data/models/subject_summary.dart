@@ -37,14 +37,32 @@ class SubjectSummary {
         'grades': grades.map((g) => g.toJson()).toList(),
       };
 
-  factory SubjectSummary.fromJson(Map<String, dynamic> json) {
+  SubjectSummary copyWith({
+    String? subject,
+    String? teacher,
+    List<GradeItem>? grades,
+  }) {
     return SubjectSummary(
-      subject: json['subject'] as String? ?? '',
-      teacher: json['teacher'] as String? ?? '',
-      grades: (json['grades'] as List<dynamic>?)
-              ?.map((e) => GradeItem.fromJson(e as Map<String, dynamic>))
-              .toList() ??
-          [],
+      subject: subject ?? this.subject,
+      teacher: teacher ?? this.teacher,
+      grades: grades ?? this.grades,
+    );
+  }
+
+  factory SubjectSummary.fromJson(Map<String, dynamic> json) {
+    final rawGrades = json['grades'];
+    final List<GradeItem> parsedGrades = [];
+    if (rawGrades is List) {
+      for (final item in rawGrades) {
+        if (item is Map) {
+          parsedGrades.add(GradeItem.fromJson(Map<String, dynamic>.from(item)));
+        }
+      }
+    }
+    return SubjectSummary(
+      subject: (json['subject'] ?? '').toString(),
+      teacher: (json['teacher'] ?? '').toString(),
+      grades: parsedGrades,
     );
   }
 }

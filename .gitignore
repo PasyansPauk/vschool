@@ -11,6 +11,8 @@ build/
 doc/api/
 coverage/
 *.lock.db
+*.apk
+*.ipa
 
 # Symbolication & Obfuscation artifacts
 app.*.symbols
